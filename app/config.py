@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     database_url: Optional[str] = None
     supabase_anon_key: Optional[str] = None
     supabase_service_key: Optional[str] = None
+    supabase_url: Optional[str] = None
     
     # PostgreSQL individual connection parameters
     db_user: Optional[str] = None
@@ -75,6 +76,13 @@ class Settings(BaseSettings):
     azure_openai_api_version: str = "2024-02-15-preview"
     azure_openai_timeout: int = 180  # Timeout in seconds
     
+    # Authentication
+    clerk_secret_key: Optional[str] = None  # Add this line
+    jwt_secret: Optional[str] = None
+    jwt_algorithm: str = "HS256"
+    jwt_expiration_minutes: int = 60   # For JWT token expiration
+
+
     # LLM API Keys - Groq (Development)
     groq_api_key: Optional[str] = None
     groq_model: str = "llama-3.1-70b-versatile"
@@ -82,10 +90,6 @@ class Settings(BaseSettings):
     # GitHub API
     github_access_token: Optional[str] = None  # Maps to GITHUB_ACCESS_TOKEN
     
-    # Authentication
-    jwt_secret: Optional[str] = None       # For JWT token signing
-    jwt_algorithm: str = "HS256"
-    jwt_expiration_minutes: int = 60
     
     # Logging
     log_level: str = "INFO"

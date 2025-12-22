@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from app.api.routes import router
+from app.api.users import router as users_router
 from app.config import settings
 from contextlib import asynccontextmanager
 
@@ -30,6 +31,7 @@ async def lifespan(_app: FastAPI):
     
     # Database Settings
     logging.info("💾 Database Configuration:")
+    logging.info(f"  Supabase URL: {'✓ Configured' if settings.supabase_url else '✗ Not set'}")
     logging.info(f"  Database URL: {'✓ Configured' if settings.database_url else '✗ Not set'}")
     logging.info(f"  Qdrant URL: {'✓ Configured' if settings.qdrant_url else '✗ Not set'}")
     
@@ -48,8 +50,11 @@ async def lifespan(_app: FastAPI):
     logging.info("🔧 GitHub Configuration:")
     logging.info(f"  GitHub Token: {'✓ Configured' if settings.github_access_token else '✗ Not set'}")
     
+
+
     # Auth Settings
     logging.info("🔐 Authentication Configuration:")
+    logging.info(f"  Clerk Secret Key: {'✓ Configured' if settings.clerk_secret_key else '✗ Not set'}")
     logging.info(f"  JWT Secret: {'✓ Configured' if settings.jwt_secret else '✗ Not set'}")
     logging.info(f"  JWT Algorithm: {settings.jwt_algorithm}")
     logging.info(f"  JWT Expiration: {settings.jwt_expiration_minutes} minutes")
@@ -81,4 +86,5 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+app.include_router(users_router, prefix="/api/users", tags=["users"])
 
