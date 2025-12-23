@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     qdrant_url: Optional[str] = None
     qdrant_api_key: Optional[str] = None
     
+    # Embedding Settings
+    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    chunk_size: int = 1000  # tokens per chunk
+    chunk_overlap: int = 200  # overlap between chunks
+
     # Environment (development or production)
     environment: str = "development"
     
