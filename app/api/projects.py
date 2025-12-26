@@ -4,6 +4,7 @@ from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
 from app.utils.github_utils import extract_project_name, validate_github_url
 from app.services.embedding_pipeline import run_embedding_pipeline
+from app.services.qdrant_service import QdrantService
 from supabase import Client
 import logging
 from typing import Literal
@@ -188,3 +189,79 @@ async def list_user_projects(
     except Exception as e:
         logger.error(f"Error listing projects: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list projects: {str(e)}")
+
+
+@router.delete("/{project_id}")
+async def delete_project(
+    project_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client)
+):
+    """
+    Delete a project and all associated data (chunks in Supabase, embeddings in Qdrant).
+    
+    Flow:
+    1. Verify Clerk token (get clerk_user_id)
+    2. Get Supabase user_id from User table using clerk_user_id
+    3. Verify project exists and belongs to the user
+    4. Delete embeddings from Qdrant
+    5. Delete project from Supabase (chunks will cascade delete)
+    6. Return deletion summary
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+        
+        logger.info(f"🗑️  Deleting project project_id={project_id} for user: {clerk_user_id}")
+        
+        # Get user_id
+        user_response = supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        
+        if not user_response.data or len(user_response.data) == 0:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_id = user_response.data[0]["id"]
+        
+        # Verify project exists and belongs to the user
+        project_response = supabase.table("Projects").select("*").eq("project_id", project_id).eq("user_id", user_id).execute()
+        
+        if not project_response.data or len(project_response.data) == 0:
+            raise HTTPException(status_code=404, detail="Project not found or you don't have permission to delete it")
+        
+        project = project_response.data[0]
+        project_name = project.get("project_name", "Unknown")
+        
+        logger.info(f"   Project found: {project_name} (project_id={project_id})")
+        
+        # Step 1: Delete embeddings from Qdrant
+        qdrant_deleted_count = 0
+        try:
+            qdrant_service = QdrantService()
+            qdrant_deleted_count = qdrant_service.delete_points_by_project_id(project_id)
+            logger.info(f"✅ Deleted {qdrant_deleted_count} embeddings from Qdrant")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to delete embeddings from Qdrant (continuing with project deletion): {e}")
+            # Continue with project deletion even if Qdrant deletion fails
+        
+        # Step 2: Delete project from Supabase (chunks will cascade delete)
+        try:
+            delete_response = supabase.table("Projects").delete().eq("project_id", project_id).eq("user_id", user_id).execute()
+            logger.info(f"✅ Deleted project from Supabase (chunks cascaded)")
+        except Exception as e:
+            logger.error(f"❌ Failed to delete project from Supabase: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
+        
+        logger.info(f"🎉 Successfully deleted project project_id={project_id}")
+        
+        return {
+            "success": True,
+            "message": "Project deleted successfully",
+            "project_id": project_id,
+            "project_name": project_name,
+            "deleted_embeddings": qdrant_deleted_count,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting project: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete project: {str(e)}")
