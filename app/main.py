@@ -4,6 +4,7 @@ import logging
 from app.api.routes import router
 from app.api.users import router as users_router
 from app.api.projects import router as projects_router
+from app.api.project_chunks_embeddings import router as project_chunks_embeddings_router
 from app.config import settings
 from contextlib import asynccontextmanager
 
@@ -89,3 +90,4 @@ app.add_middleware(
 app.include_router(router, prefix="/api")
 app.include_router(users_router, prefix="/api/users", tags=["users"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
+app.include_router(project_chunks_embeddings_router, prefix="/api/project_chunks_embeddings")

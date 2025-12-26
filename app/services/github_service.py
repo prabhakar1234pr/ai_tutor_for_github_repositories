@@ -121,39 +121,50 @@ async def fetch_repository_files(github_url: str) -> List[Dict[str, str]]:
         ]
     """
     owner, repo = extract_repo_info(github_url)
-    logger.info(f"Fetching repository: {owner}/{repo}")
+    logger.info(f"📂 Fetching repository: {owner}/{repo} from {github_url}")
 
     headers = {}
     if settings.github_access_token:
         headers["Authorization"] = f"token {settings.github_access_token}"
+        logger.debug("🔑 Using GitHub access token for authentication")
+    else:
+        logger.warning("⚠️  No GitHub access token configured, using unauthenticated requests")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
 
         # -----------------------------
         # Get default branch
         # -----------------------------
+        logger.debug(f"🌿 Fetching repository info to get default branch")
         repo_resp = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}",
             headers=headers
         )
         repo_resp.raise_for_status()
         default_branch = repo_resp.json()["default_branch"]
+        logger.info(f"✅ Default branch: {default_branch}")
 
         # -----------------------------
         # Fetch repository tree
         # -----------------------------
+        logger.debug(f"🌳 Fetching repository tree (recursive) for branch: {default_branch}")
         tree_resp = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1",
             headers=headers
         )
         tree_resp.raise_for_status()
         tree_data = tree_resp.json()
+        total_items = len(tree_data.get("tree", []))
+        logger.info(f"📋 Repository tree contains {total_items} items")
 
         files: List[Dict[str, str]] = []
         total_bytes = 0
+        skipped_count = 0
+        large_file_count = 0
 
         max_files = settings.max_files_per_project
         max_bytes = int(settings.max_text_size_mb * 1024 * 1024)
+        logger.debug(f"📊 Limits: max_files={max_files}, max_size={max_bytes / 1024 / 1024:.1f} MB")
 
         tasks = []
 
@@ -164,32 +175,51 @@ async def fetch_repository_files(github_url: str) -> List[Dict[str, str]]:
             file_path = item["path"]
 
             if should_ignore_file(file_path):
+                skipped_count += 1
+                logger.debug(f"⏭️  Skipping ignored file: {file_path}")
                 continue
 
-            if item.get("size", 0) > 1024 * 1024:
-                logger.debug(f"Skipping large file: {file_path}")
+            file_size = item.get("size", 0)
+            if file_size > 1024 * 1024:
+                large_file_count += 1
+                logger.debug(f"📦 Skipping large file ({file_size / 1024:.1f} KB): {file_path}")
                 continue
 
             blob_url = f"https://api.github.com/repos/{owner}/{repo}/git/blobs/{item['sha']}"
             tasks.append((file_path, blob_url))
 
+        logger.info(f"📥 Preparing to fetch {len(tasks)} files (skipped {skipped_count} ignored, {large_file_count} large files)")
+
+        fetched_count = 0
         for file_path, blob_url in tasks:
-            content = await fetch_blob(client, blob_url, headers)
-            content_bytes = len(content.encode("utf-8"))
+            try:
+                content = await fetch_blob(client, blob_url, headers)
+                content_bytes = len(content.encode("utf-8"))
+                total_bytes += content_bytes
+                fetched_count += 1
 
-            total_bytes += content_bytes
+                if len(files) >= max_files:
+                    logger.error(f"❌ Repository exceeds maximum file limit: {len(files)} >= {max_files}")
+                    raise ValueError(f"Repository exceeds maximum file limit ({max_files} files)")
 
-            if len(files) >= max_files:
-                raise ValueError("Repository exceeds maximum file limit")
+                if total_bytes > max_bytes:
+                    logger.error(f"❌ Repository exceeds maximum text size: {total_bytes / 1024 / 1024:.2f} MB > {max_bytes / 1024 / 1024:.2f} MB")
+                    raise ValueError(f"Repository exceeds maximum text size ({max_bytes / 1024 / 1024:.1f} MB)")
 
-            if total_bytes > max_bytes:
-                raise ValueError("Repository exceeds maximum text size")
+                language = detect_language(file_path)
+                files.append({
+                    "file_path": file_path,
+                    "content": content,
+                    "language": language
+                })
+                
+                if fetched_count % 10 == 0:
+                    logger.debug(f"   Progress: {fetched_count}/{len(tasks)} files fetched ({total_bytes / 1024:.1f} KB)")
+                    
+            except Exception as e:
+                logger.error(f"❌ Failed to fetch file {file_path}: {e}")
+                raise
 
-            files.append({
-                "file_path": file_path,
-                "content": content,
-                "language": detect_language(file_path)
-            })
-
-        logger.info(f"Fetched {len(files)} files ({total_bytes / 1024:.1f} KB)")
+        logger.info(f"✅ Successfully fetched {len(files)} files ({total_bytes / 1024:.1f} KB, {total_bytes / 1024 / 1024:.2f} MB)")
+        logger.debug(f"   Files by language: {dict((lang, sum(1 for f in files if f['language'] == lang)) for lang in set(f['language'] for f in files))}")
         return files

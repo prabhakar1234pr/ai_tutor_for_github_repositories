@@ -1,4 +1,3 @@
-import asyncio
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Query
 from pydantic import BaseModel
 from supabase import Client
@@ -6,7 +5,6 @@ from uuid import UUID
 
 from app.core.supabase_client import get_supabase_client
 from app.services.embedding_pipeline import run_embedding_pipeline
-from app.utils.github_utils import validate_github_url
 
 router = APIRouter(
     prefix="/projects/chunks-embeddings",
@@ -53,8 +51,9 @@ async def start_project_embedding(
 
     # Schedule the async pipeline; FastAPI will execute this after response returns.
     background_tasks.add_task(
-        asyncio.create_task,
-        run_embedding_pipeline(str(payload.project_id), payload.github_url),
+        run_embedding_pipeline,
+        str(payload.project_id),
+        payload.github_url,
     )
 
     return {

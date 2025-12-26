@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     chunk_size: int = 1000  # tokens per chunk
     chunk_overlap: int = 200  # overlap between chunks
+    max_files_per_project: int = 500  # maximum files to process per project
+    max_text_size_mb: float = 2.5  # maximum total text size in MB per project
+    max_chunks_per_project: int = 500  # maximum chunks per project
 
     # Environment (development or production)
     environment: str = "development"

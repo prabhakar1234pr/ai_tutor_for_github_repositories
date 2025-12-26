@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, Field, field_validator
 from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
 from app.utils.github_utils import extract_project_name, validate_github_url
+from app.services.embedding_pipeline import run_embedding_pipeline
 from supabase import Client
 import logging
 from typing import Literal
@@ -27,11 +28,12 @@ class CreateProjectRequest(BaseModel):
 @router.post("/create")
 async def create_project(
     project_data: CreateProjectRequest,
+    background_tasks: BackgroundTasks,
     user_info: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_supabase_client)
 ):
     """
-    Create a new project in Supabase Projects table
+    Create a new project in Supabase Projects table and automatically start the embedding pipeline
     
     Flow:
     1. Verify Clerk token (get clerk_user_id)
@@ -39,7 +41,8 @@ async def create_project(
     3. Extract project name from GitHub URL
     4. Validate input data
     5. Insert project into Projects table
-    6. Return created project data
+    6. Trigger embedding pipeline in background
+    7. Return created project data
     """
     try:
         clerk_user_id = user_info["clerk_user_id"]
@@ -82,8 +85,18 @@ async def create_project(
             raise HTTPException(status_code=500, detail="Failed to create project")
         
         created_project = project_response.data[0]
+        project_id = created_project['project_id']
+        github_url = created_project['github_url']
         
-        logger.info(f"Project created successfully: {created_project['project_id']}")
+        logger.info(f"Project created successfully: {project_id}")
+        
+        # Trigger embedding pipeline in background
+        background_tasks.add_task(
+            run_embedding_pipeline,
+            str(project_id),
+            github_url,
+        )
+        logger.info(f"Embedding pipeline scheduled for project: {project_id}")
         
         return {
             "success": True,

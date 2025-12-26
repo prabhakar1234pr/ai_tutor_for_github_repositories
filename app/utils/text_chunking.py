@@ -1,10 +1,14 @@
+import logging
 from typing import List, Dict
 import tiktoken
 from app.config import settings
 
+logger = logging.getLogger(__name__)
+
 # Initialize tokenizer once
 # cl100k_base works well for most modern LLMs
 _tokenizer = tiktoken.get_encoding("cl100k_base")
+logger.debug(f"🔤 Initialized tiktoken tokenizer: cl100k_base")
 
 
 def count_tokens(text: str) -> int:
@@ -55,7 +59,8 @@ def chunk_text(
         start += chunk_size - chunk_overlap
 
         if len(chunks) > settings.max_chunks_per_project:
-            raise ValueError("Maximum chunk limit exceeded")
+            logger.error(f"❌ Maximum chunk limit exceeded for file {file_path}: {len(chunks)} > {settings.max_chunks_per_project}")
+            raise ValueError(f"Maximum chunk limit exceeded ({settings.max_chunks_per_project} chunks)")
 
     return chunks
 
@@ -77,20 +82,43 @@ def chunk_files(
           }
         ]
     """
+    logger.info(f"✂️  Chunking {len(files)} files for project_id={project_id}")
+    logger.debug(f"   Chunk size: {settings.chunk_size} tokens")
+    logger.debug(f"   Chunk overlap: {settings.chunk_overlap} tokens")
+    logger.debug(f"   Max chunks per project: {settings.max_chunks_per_project}")
 
     all_chunks: List[Dict] = []
+    files_chunked = 0
 
     for file in files:
+        file_path = file["file_path"]
+        content_size = len(file["content"].encode("utf-8"))
+        file_tokens = count_tokens(file["content"])
+        
+        logger.debug(f"   Chunking file {files_chunked + 1}/{len(files)}: {file_path} ({content_size / 1024:.1f} KB, {file_tokens:,} tokens)")
+        
         file_chunks = chunk_text(
             project_id=project_id,
-            file_path=file["file_path"],
+            file_path=file_path,
             content=file["content"],
             language=file["language"],
         )
 
         all_chunks.extend(file_chunks)
+        files_chunked += 1
+        
+        logger.debug(f"      Created {len(file_chunks)} chunks from {file_path} (total chunks so far: {len(all_chunks)})")
 
         if len(all_chunks) > settings.max_chunks_per_project:
-            raise ValueError("Maximum chunk limit exceeded")
+            logger.error(f"❌ Maximum chunk limit exceeded: {len(all_chunks)} > {settings.max_chunks_per_project}")
+            raise ValueError(f"Maximum chunk limit exceeded ({settings.max_chunks_per_project} chunks)")
+
+    total_tokens = sum(c["token_count"] for c in all_chunks)
+    avg_chunk_size = total_tokens // len(all_chunks) if all_chunks else 0
+    
+    logger.info(f"✅ Chunked {files_chunked} files into {len(all_chunks)} chunks")
+    logger.debug(f"   Total tokens: {total_tokens:,}")
+    logger.debug(f"   Average chunk size: {avg_chunk_size} tokens")
+    logger.debug(f"   Files by language: {dict((lang, sum(1 for f in files if f['language'] == lang)) for lang in set(f['language'] for f in files))}")
 
     return all_chunks
