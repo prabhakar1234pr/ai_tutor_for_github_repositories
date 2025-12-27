@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings
 from typing import Optional, Union
 from functools import lru_cache
 from pathlib import Path
-from pydantic import field_validator
+from pydantic import field_validator, ConfigDict
 
 # Get the project root directory (one level up from app/)
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -102,12 +102,13 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
     
-    class Config:
+    model_config = ConfigDict(
         # Look for .env in project root (ai_tutor_for_github_repositories/)
-        env_file = str(PROJECT_ROOT / ".env")
-        env_file_encoding = "utf-8"
-        case_sensitive = False
-        extra = "ignore"  # Ignore extra fields in .env that aren't defined
+        env_file=str(PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore"  # Ignore extra fields in .env that aren't defined
+    )
 
 @lru_cache()
 def get_settings() -> Settings:

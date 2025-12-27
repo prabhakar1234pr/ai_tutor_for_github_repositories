@@ -4,9 +4,10 @@ from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
 from app.utils.github_utils import extract_project_name, validate_github_url
 from app.services.embedding_pipeline import run_embedding_pipeline
-from app.services.qdrant_service import QdrantService
+from app.services.qdrant_service import get_qdrant_service
 from supabase import Client
 import logging
+import time
 from typing import Literal
 
 router = APIRouter()
@@ -45,9 +46,12 @@ async def create_project(
     6. Trigger embedding pipeline in background
     7. Return created project data
     """
+    api_start_time = time.time()
+    
     try:
         clerk_user_id = user_info["clerk_user_id"]
         
+        logger.info(f"⏱️  [TIMING] User clicked 'Let's start building' - API request received at {time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"Creating project for user: {clerk_user_id}")
         
         # Get Supabase user_id from User table
@@ -89,14 +93,19 @@ async def create_project(
         project_id = created_project['project_id']
         github_url = created_project['github_url']
         
+        api_duration = time.time() - api_start_time
         logger.info(f"Project created successfully: {project_id}")
+        logger.info(f"⏱️  [TIMING] API endpoint completed in {api_duration:.3f}s - Project inserted into database")
         
         # Trigger embedding pipeline in background
+        # Pass the API start time to track total time from user click to completion
         background_tasks.add_task(
             run_embedding_pipeline,
             str(project_id),
             github_url,
+            api_start_time,  # Pass API start time to pipeline
         )
+        logger.info(f"⏱️  [TIMING] Background task scheduled - Pipeline will start processing")
         logger.info(f"Embedding pipeline scheduled for project: {project_id}")
         
         return {
@@ -117,6 +126,40 @@ async def create_project(
     except Exception as e:
         logger.error(f"Error creating project: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create project: {str(e)}")
+
+
+@router.get("/user/list")
+async def list_user_projects(
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client)
+):
+    """
+    List all projects for the authenticated user
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+        
+        # Get user_id
+        user_response = supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        
+        if not user_response.data or len(user_response.data) == 0:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_id = user_response.data[0]["id"]
+        
+        # Get all projects for user
+        projects_response = supabase.table("Projects").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
+        
+        return {
+            "success": True,
+            "projects": projects_response.data if projects_response.data else []
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing projects: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list projects: {str(e)}")
 
 
 @router.get("/{project_id}")
@@ -155,40 +198,6 @@ async def get_project(
     except Exception as e:
         logger.error(f"Error fetching project: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch project: {str(e)}")
-
-
-@router.get("/user/list")
-async def list_user_projects(
-    user_info: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_supabase_client)
-):
-    """
-    List all projects for the authenticated user
-    """
-    try:
-        clerk_user_id = user_info["clerk_user_id"]
-        
-        # Get user_id
-        user_response = supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
-        
-        if not user_response.data or len(user_response.data) == 0:
-            raise HTTPException(status_code=404, detail="User not found")
-        
-        user_id = user_response.data[0]["id"]
-        
-        # Get all projects for user
-        projects_response = supabase.table("Projects").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
-        
-        return {
-            "success": True,
-            "projects": projects_response.data if projects_response.data else []
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing projects: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to list projects: {str(e)}")
 
 
 @router.delete("/{project_id}")
@@ -235,7 +244,7 @@ async def delete_project(
         # Step 1: Delete embeddings from Qdrant
         qdrant_deleted_count = 0
         try:
-            qdrant_service = QdrantService()
+            qdrant_service = get_qdrant_service()  # Use singleton for better performance
             qdrant_deleted_count = qdrant_service.delete_points_by_project_id(project_id)
             logger.info(f"✅ Deleted {qdrant_deleted_count} embeddings from Qdrant")
         except Exception as e:

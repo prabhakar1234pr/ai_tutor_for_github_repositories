@@ -46,8 +46,8 @@ EXTENSION_LANGUAGE_MAP = {
     "java": "java",
 }
 
-# Max concurrent GitHub blob fetches
-FETCH_SEMAPHORE = asyncio.Semaphore(10)
+# Max concurrent GitHub blob fetches (increased for better performance)
+FETCH_SEMAPHORE = asyncio.Semaphore(20)
 
 
 # -----------------------------
@@ -190,35 +190,51 @@ async def fetch_repository_files(github_url: str) -> List[Dict[str, str]]:
 
         logger.info(f"📥 Preparing to fetch {len(tasks)} files (skipped {skipped_count} ignored, {large_file_count} large files)")
 
-        fetched_count = 0
-        for file_path, blob_url in tasks:
+        # Optimize: Fetch files in parallel using asyncio.gather
+        async def fetch_file_with_metadata(file_path: str, blob_url: str) -> Dict[str, str]:
+            """Fetch a single file and return its metadata"""
             try:
                 content = await fetch_blob(client, blob_url, headers)
-                content_bytes = len(content.encode("utf-8"))
-                total_bytes += content_bytes
-                fetched_count += 1
-
-                if len(files) >= max_files:
-                    logger.error(f"❌ Repository exceeds maximum file limit: {len(files)} >= {max_files}")
-                    raise ValueError(f"Repository exceeds maximum file limit ({max_files} files)")
-
-                if total_bytes > max_bytes:
-                    logger.error(f"❌ Repository exceeds maximum text size: {total_bytes / 1024 / 1024:.2f} MB > {max_bytes / 1024 / 1024:.2f} MB")
-                    raise ValueError(f"Repository exceeds maximum text size ({max_bytes / 1024 / 1024:.1f} MB)")
-
                 language = detect_language(file_path)
-                files.append({
+                return {
                     "file_path": file_path,
                     "content": content,
-                    "language": language
-                })
-                
-                if fetched_count % 10 == 0:
-                    logger.debug(f"   Progress: {fetched_count}/{len(tasks)} files fetched ({total_bytes / 1024:.1f} KB)")
-                    
+                    "language": language,
+                    "size_bytes": len(content.encode("utf-8"))
+                }
             except Exception as e:
                 logger.error(f"❌ Failed to fetch file {file_path}: {e}")
                 raise
+
+        # Fetch all files in parallel (respecting semaphore limit)
+        logger.debug(f"🚀 Starting parallel fetch of {len(tasks)} files")
+        fetch_tasks = [
+            fetch_file_with_metadata(file_path, blob_url)
+            for file_path, blob_url in tasks
+        ]
+        
+        fetched_results = await asyncio.gather(*fetch_tasks)
+        
+        # Process results and check limits
+        for result in fetched_results:
+            content_bytes = result["size_bytes"]
+            total_bytes += content_bytes
+            
+            if len(files) >= max_files:
+                logger.error(f"❌ Repository exceeds maximum file limit: {len(files)} >= {max_files}")
+                raise ValueError(f"Repository exceeds maximum file limit ({max_files} files)")
+
+            if total_bytes > max_bytes:
+                logger.error(f"❌ Repository exceeds maximum text size: {total_bytes / 1024 / 1024:.2f} MB > {max_bytes / 1024 / 1024:.2f} MB")
+                raise ValueError(f"Repository exceeds maximum text size ({max_bytes / 1024 / 1024:.1f} MB)")
+
+            files.append({
+                "file_path": result["file_path"],
+                "content": result["content"],
+                "language": result["language"]
+            })
+        
+        logger.debug(f"✅ Parallel fetch completed: {len(files)} files ({total_bytes / 1024:.1f} KB)")
 
         logger.info(f"✅ Successfully fetched {len(files)} files ({total_bytes / 1024:.1f} KB, {total_bytes / 1024 / 1024:.2f} MB)")
         logger.debug(f"   Files by language: {dict((lang, sum(1 for f in files if f['language'] == lang)) for lang in set(f['language'] for f in files))}")

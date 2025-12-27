@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import List, Dict
 from supabase import Client
 from app.core.supabase_client import get_supabase_client
@@ -14,6 +15,11 @@ def store_chunks(
     Bulk insert chunks into Supabase and return chunk IDs.
     """
     logger.info(f"💾 Storing {len(chunks)} chunks in Supabase for project_id={project_id}")
+    
+    # Handle empty chunks list
+    if not chunks:
+        logger.info(f"✅ No chunks to store (empty list)")
+        return []
     
     supabase: Client = get_supabase_client()
 
@@ -47,7 +53,18 @@ def store_chunks(
             logger.error(f"❌ Failed to store chunks: No data returned from Supabase")
             raise RuntimeError("Failed to store chunks: No data returned from Supabase")
 
-        chunk_ids = [row["id"] for row in response.data]
+        # Issue 3: Validate chunk IDs are valid UUIDs
+        chunk_ids = []
+        for row in response.data:
+            chunk_id = row["id"]
+            # Validate it's a UUID
+            try:
+                uuid.UUID(str(chunk_id))  # Validate UUID format
+                chunk_ids.append(str(chunk_id))  # Ensure it's a string UUID
+            except (ValueError, TypeError) as e:
+                logger.error(f"❌ Invalid UUID returned from Supabase: {chunk_id} (type: {type(chunk_id).__name__})")
+                raise ValueError(f"Invalid UUID format for chunk_id returned from Supabase: {chunk_id} - {e}")
+        
         logger.info(f"✅ Successfully stored {len(chunk_ids)} chunks in Supabase")
         logger.debug(f"   First chunk_id: {chunk_ids[0] if chunk_ids else 'N/A'}")
         logger.debug(f"   Last chunk_id: {chunk_ids[-1] if chunk_ids else 'N/A'}")
