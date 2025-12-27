@@ -290,11 +290,10 @@ class TestProjectsAPI:
         mock_supabase_client.table.side_effect = table_side_effect
         
         # Mock QdrantService
-        with patch("app.api.projects.QdrantService") as mock_qdrant_service_class:
-            mock_qdrant_service = Mock()
-            mock_qdrant_service.delete_points_by_project_id.return_value = 10
-            mock_qdrant_service_class.return_value = mock_qdrant_service
-            
+        mock_qdrant_service = Mock()
+        mock_qdrant_service.delete_points_by_project_id.return_value = 10
+        
+        with patch("app.api.projects.get_qdrant_service", return_value=mock_qdrant_service):
             async def mock_verify_token(authorization=None):
                 return mock_clerk_user
             
