@@ -351,22 +351,33 @@ class QdrantService:
             logger.error(f"❌ Failed to delete points from Qdrant: {e}", exc_info=True)
             raise
 
+    
+
     def search(
         self,
         project_id: str,
         query_embedding: List[float],
         limit: int = 5,
     ):
-        return self.client.search(
-            collection_name=COLLECTION_NAME,
-            query_vector=query_embedding,
-            limit=limit,
-            query_filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="project_id",
-                        match=MatchValue(value=project_id),
-                    )
-                ]
-            ),
+        # Build filter for project_id
+        query_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="project_id",
+                    match=MatchValue(value=project_id),
+                )
+            ]
         )
+
+        # Use query_points method (qdrant-client >= 1.7.0)
+        result = self.client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_embedding,
+            query_filter=query_filter,
+            limit=limit,
+        )
+
+        return result.points
+
+
+    

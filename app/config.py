@@ -93,7 +93,7 @@ class Settings(BaseSettings):
 
     # LLM API Keys - Groq (Development)
     groq_api_key: Optional[str] = None
-    groq_model: str = "llama-3.1-70b-versatile"
+    groq_model: str = "meta-llama/llama-4-maverick-17b-128e-instruct"
     
     # GitHub API
     github_access_token: Optional[str] = None  # Maps to GITHUB_ACCESS_TOKEN

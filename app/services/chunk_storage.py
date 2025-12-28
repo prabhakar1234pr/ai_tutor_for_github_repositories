@@ -26,9 +26,18 @@ def store_chunks(
     rows = []
     total_content_size = 0
     files_represented = set()
+    null_bytes_removed = 0
     
     for chunk in chunks:
-        content_size = len(chunk["content"].encode("utf-8"))
+        # Sanitize content: remove null bytes that PostgreSQL cannot store
+        content = chunk["content"]
+        if '\x00' in content or '\u0000' in content:
+            original_length = len(content)
+            content = content.replace('\x00', '').replace('\u0000', '')
+            null_bytes_removed += original_length - len(content)
+            logger.debug(f"   Removed null bytes from chunk {chunk['chunk_index']} in {chunk['file_path']}")
+        
+        content_size = len(content.encode("utf-8"))
         total_content_size += content_size
         files_represented.add(chunk["file_path"])
         
@@ -37,9 +46,12 @@ def store_chunks(
             "file_path": chunk["file_path"],
             "chunk_index": chunk["chunk_index"],
             "language": chunk["language"],
-            "content": chunk["content"],
+            "content": content,  # Use sanitized content
             "token_count": chunk["token_count"],
         })
+    
+    if null_bytes_removed > 0:
+        logger.warning(f"⚠️  Removed {null_bytes_removed} null bytes from chunks before storage")
 
     logger.debug(f"   Preparing {len(rows)} rows for insertion")
     logger.debug(f"   Total content size: {total_content_size / 1024:.1f} KB ({total_content_size / 1024 / 1024:.2f} MB)")

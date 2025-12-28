@@ -1,8 +1,10 @@
 import logging
 import time
-from typing import List
-from sentence_transformers import SentenceTransformer
+from typing import List, TYPE_CHECKING
 from app.config import settings
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,9 @@ def get_embedding_service() -> 'EmbeddingService':
     global _embedding_service_instance
     
     if _embedding_service_instance is None:
+        # Lazy import - only import when actually needed (avoids slow TensorFlow init on startup)
+        from sentence_transformers import SentenceTransformer
+        
         logger.info(f"🤖 Loading embedding model (first use - this may take a few seconds)...")
         logger.info(f"   Model: {settings.embedding_model_name}")
         model = SentenceTransformer(settings.embedding_model_name)
@@ -33,7 +38,7 @@ def get_embedding_service() -> 'EmbeddingService':
 
 
 class EmbeddingService:
-    def __init__(self, model: SentenceTransformer = None):
+    def __init__(self, model: 'SentenceTransformer' = None):
         """
         Initialize EmbeddingService with a pre-loaded model.
         
@@ -41,6 +46,9 @@ class EmbeddingService:
             model: Pre-loaded SentenceTransformer model. If None, loads the model (for testing).
         """
         if model is None:
+            # Lazy import - only import when actually needed
+            from sentence_transformers import SentenceTransformer
+            
             # Allow direct instantiation for testing purposes
             logger.info(f"🤖 Initializing EmbeddingService with model: {settings.embedding_model_name}")
             self.model = SentenceTransformer(settings.embedding_model_name)
