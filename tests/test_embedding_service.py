@@ -9,7 +9,7 @@ import numpy as np
 class TestEmbeddingService:
     """Test cases for EmbeddingService"""
     
-    @patch("app.services.embedding_service.SentenceTransformer")
+    @patch("sentence_transformers.SentenceTransformer")
     def test_embed_texts_success(self, mock_transformer_class):
         """Test embed_texts - successful embedding generation"""
         from app.services.embedding_service import EmbeddingService
@@ -28,7 +28,7 @@ class TestEmbeddingService:
         assert len(embeddings[0]) == 384
         mock_model.encode.assert_called_once()
     
-    @patch("app.services.embedding_service.SentenceTransformer")
+    @patch("sentence_transformers.SentenceTransformer")
     def test_embed_texts_empty(self, mock_transformer_class):
         """Test embed_texts - empty input"""
         from app.services.embedding_service import EmbeddingService
@@ -42,7 +42,7 @@ class TestEmbeddingService:
         assert embeddings == []
         mock_model.encode.assert_not_called()
     
-    @patch("app.services.embedding_service.SentenceTransformer")
+    @patch("sentence_transformers.SentenceTransformer")
     def test_embed_texts_batch_processing(self, mock_transformer_class):
         """Test embed_texts - batch processing"""
         from app.services.embedding_service import EmbeddingService

@@ -135,7 +135,9 @@ class TestQdrantService:
         mock_result = Mock()
         mock_result.id = "chunk_1"
         mock_result.score = 0.95
-        mock_qdrant_client.search.return_value = [mock_result]
+        mock_query_response = Mock()
+        mock_query_response.points = [mock_result]
+        mock_qdrant_client.query_points.return_value = mock_query_response
         
         project_id = "project_123"
         query_embedding = [0.1] * 384
@@ -143,9 +145,10 @@ class TestQdrantService:
         result = service.search(project_id, query_embedding, limit=5)
         
         # Verify search was called
-        mock_qdrant_client.search.assert_called_once()
-        call_args = mock_qdrant_client.search.call_args
+        mock_qdrant_client.query_points.assert_called_once()
+        call_args = mock_qdrant_client.query_points.call_args
         assert call_args[1]["collection_name"] == "gitguide_chunks"
         assert call_args[1]["limit"] == 5
+        assert call_args[1]["query"] == query_embedding
         assert len(result) == 1
 

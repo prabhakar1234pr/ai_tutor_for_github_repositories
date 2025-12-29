@@ -7,7 +7,7 @@ import logging
 
 from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
-from app.services.rag_service import generate_rag_response
+from app.services.rag_pipeline import generate_rag_response
 
 router = APIRouter(
     tags=["Chatbot"],
