@@ -8,6 +8,8 @@ from app.api.project_chunks_embeddings import router as project_chunks_embedding
 from app.config import settings
 from contextlib import asynccontextmanager
 from app.api.chatbot import router as chatbot_router
+from app.api.roadmap import router as roadmap_router
+from app.api.progress import router as progress_router
 
 # Configure logging from settings
 logging.basicConfig(level=settings.log_level)
@@ -93,3 +95,5 @@ app.include_router(users_router, prefix="/api/users", tags=["users"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])
 app.include_router(project_chunks_embeddings_router, prefix="/api/project_chunks_embeddings")
 app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
+app.include_router(roadmap_router, prefix="/api/roadmap", tags=["roadmap"])
+app.include_router(progress_router, prefix="/api/progress", tags=["progress"])

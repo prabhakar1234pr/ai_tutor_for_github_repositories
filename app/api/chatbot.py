@@ -9,9 +9,7 @@ from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
 from app.services.rag_pipeline import generate_rag_response
 
-router = APIRouter(
-    tags=["Chatbot"],
-)
+router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +19,22 @@ class ChatMessage(BaseModel):
     content: str = Field(..., description="Message content")
 
 
+class RoadmapContext(BaseModel):
+    day_number: Optional[int] = Field(None, description="Current day number")
+    day_theme: Optional[str] = Field(None, description="Current day theme")
+    concept_title: Optional[str] = Field(None, description="Current concept title")
+    subconcept_title: Optional[str] = Field(None, description="Current subconcept title")
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User's message", min_length=1, max_length=2000)
     conversation_history: Optional[List[ChatMessage]] = Field(
         default=[], 
         description="Previous conversation messages for context"
+    )
+    roadmap_context: Optional[RoadmapContext] = Field(
+        None,
+        description="Current roadmap context (day, concept, subconcept)"
     )
 
 
@@ -122,12 +131,28 @@ async def chat(
             conversation_history = conversation_history[-10:]
             logger.debug(f"   Limited conversation history to last 10 messages")
         
+        # Build enhanced query with roadmap context
+        enhanced_query = chat_request.message
+        if chat_request.roadmap_context:
+            ctx = chat_request.roadmap_context
+            context_parts = []
+            if ctx.day_number is not None:
+                context_parts.append(f"Day {ctx.day_number}: {ctx.day_theme or ''}")
+            if ctx.concept_title:
+                context_parts.append(f"Concept: {ctx.concept_title}")
+            if ctx.subconcept_title:
+                context_parts.append(f"Subconcept: {ctx.subconcept_title}")
+            
+            if context_parts:
+                enhanced_query = f"[Context: {' | '.join(context_parts)}]\n\n{chat_request.message}"
+                logger.info(f"   Enhanced query with roadmap context: {', '.join(context_parts)}")
+        
         # Generate RAG response
         try:
             logger.info(f"   Generating RAG response for message: {chat_request.message[:100]}...")
             rag_result = await generate_rag_response(
                 project_id=str(project_id),
-                query=chat_request.message,
+                query=enhanced_query,
                 conversation_history=conversation_history
             )
             

@@ -11,9 +11,11 @@ from app.agents.state import (
     SubConceptData,
     TaskData,
 )
-
-# We'll add these as we create them:
-# from app.agents.roadmap_agent import roadmap_graph, run_roadmap_agent
+from app.agents.roadmap_agent import (
+    get_roadmap_graph,
+    run_roadmap_agent,
+    build_roadmap_graph,
+)
 
 __all__ = [
     # State types
@@ -23,7 +25,8 @@ __all__ = [
     "ConceptData",
     "SubConceptData",
     "TaskData",
-    # Main agent (will add later)
-    # "roadmap_graph",
-    # "run_roadmap_agent",
+    # Main agent
+    "get_roadmap_graph",
+    "run_roadmap_agent",
+    "build_roadmap_graph",
 ]

@@ -3,7 +3,7 @@ Agent state definition for roadmap generation.
 This defines all the data that flows through the LangGraph nodes.
 """
 
-from typing import TypedDict, List, Optional, Literal
+from typing import TypedDict, List, Optional, Literal, Dict
 
 class RepoAnalysis(TypedDict):
     """Structured analysis of the GitHub repository"""
@@ -71,6 +71,10 @@ class RoadmapAgentState(TypedDict):
     current_day_id: Optional[str] # UUID of current day in database
     current_concepts: List[ConceptData]  # Concepts being generated
     current_concept_index: int    # Which concept we're on
+    
+    # ===== INTERNAL STATE (Database IDs) =====
+    day_ids_map: Optional[Dict[int, str]]  # Mapping day_number -> day_id
+    concept_ids_map: Optional[Dict[int, str]]  # Mapping concept order_index -> concept_id
     
     # ===== STATUS TRACKING =====
     is_complete: bool             # Is entire roadmap done?

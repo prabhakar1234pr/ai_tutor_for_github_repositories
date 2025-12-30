@@ -33,7 +33,14 @@ Focus on:
   "difficulty": "beginner/intermediate/advanced"
 }}
 
-**CRITICAL:** Return ONLY the JSON object, no markdown formatting, no extra text.
+**CRITICAL:** 
+- Return ONLY the JSON object
+- NO markdown code blocks (no ```json or ```)
+- NO explanatory text before or after
+- NO comments
+- Start with {{ and end with }}
+- Example of correct response:
+{{"summary": "...", "primary_language": "...", "frameworks": [...], "architecture_patterns": [...], "difficulty": "..."}}
 """
 
 # ===== CURRICULUM PLANNING PROMPT =====

@@ -155,6 +155,35 @@ async def run_embedding_pipeline(
             {"status": "ready"}
         ).eq("project_id", project_id).execute()
         logger.info(f"✅ Step 7/7: Project status updated to 'ready'")
+        
+        # Step 8: Trigger roadmap generation (background task)
+        logger.info(f"📚 Step 8/8: Triggering roadmap generation for project_id={project_id}")
+        try:
+            from app.services.roadmap_generation import run_roadmap_generation
+            
+            # Get project data for roadmap generation
+            project_response = supabase.table("Projects").select(
+                "github_url, skill_level, target_days"
+            ).eq("project_id", project_id).execute()
+            
+            if project_response.data:
+                project_data = project_response.data[0]
+                # Schedule roadmap generation as background task (non-blocking)
+                import asyncio
+                asyncio.create_task(
+                    run_roadmap_generation(
+                        project_id=str(project_id),
+                        github_url=project_data["github_url"],
+                        skill_level=project_data["skill_level"],
+                        target_days=project_data["target_days"],
+                    )
+                )
+                logger.info(f"✅ Step 8/8: Roadmap generation scheduled as background task")
+            else:
+                logger.warning(f"⚠️  Could not find project data for roadmap generation")
+        except Exception as roadmap_error:
+            logger.error(f"❌ Failed to trigger roadmap generation: {roadmap_error}", exc_info=True)
+            # Don't fail the embedding pipeline if roadmap generation fails
 
         total_duration = time.time() - pipeline_start_time
         
