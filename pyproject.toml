@@ -18,6 +18,8 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     "groq>=1.0.0",
     "langgraph>=1.0.5",
+    "langchain>=1.2.0",
+    "langchain-core>=1.2.5",
 ]
 
 [project.optional-dependencies]
