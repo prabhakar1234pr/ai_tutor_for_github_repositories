@@ -186,8 +186,8 @@ async def generate_rag_response(
         "Be concise but thorough in your explanations."
     )
     
-    # Generate response
-    response = groq_service.generate_response(
+    # Generate response (use async version)
+    response = await groq_service.generate_response_async(
         user_query=query,
         system_prompt=system_prompt,
         context=context,

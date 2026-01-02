@@ -20,6 +20,8 @@ dependencies = [
     "langgraph>=1.0.5",
     "langchain>=1.2.0",
     "langchain-core>=1.2.5",
+    "redis>=5.0.0",
+    "tenacity>=8.2.0",
 ]
 
 [project.optional-dependencies]

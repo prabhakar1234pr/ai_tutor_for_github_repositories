@@ -4,15 +4,15 @@ This ensures consistency across all days.
 """
 
 import logging
-import json
 from app.agents.state import RoadmapAgentState, DayTheme
 from app.services.groq_service import get_groq_service
 from app.agents.prompts import CURRICULUM_PLANNING_PROMPT
+from app.utils.json_parser import parse_llm_json_response_async
 
 logger = logging.getLogger(__name__)
 
 
-def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentState:
+async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Generate all day themes upfront for the entire curriculum.
     
@@ -68,7 +68,8 @@ def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentState:
     
     try:
         logger.info(f"🤖 Generating curriculum themes with LLM...")
-        llm_response = groq_service.generate_response(
+        # Use async version with rate limiting
+        llm_response = await groq_service.generate_response_async(
             user_query=prompt,
             system_prompt=system_prompt,
             context="",  # Context already in prompt
@@ -76,24 +77,13 @@ def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentState:
         
         logger.debug(f"   LLM response length: {len(llm_response)} chars")
         
-        # Parse JSON response
-        response_text = llm_response.strip()
-        
-        # Remove markdown code blocks if present
-        if response_text.startswith("```"):
-            start_idx = response_text.find("```") + 3
-            if response_text[start_idx:start_idx+5] == "json":
-                start_idx += 5
-            end_idx = response_text.rfind("```")
-            response_text = response_text[start_idx:end_idx].strip()
-        
-        # Parse JSON array
+        # Parse JSON response using async parser (supports sanitizer)
         try:
-            themes_list = json.loads(response_text)
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Failed to parse JSON response: {e}")
-            logger.debug(f"   Response text: {response_text[:500]}")
-            raise ValueError(f"Invalid JSON response from LLM: {e}")
+            themes_list = await parse_llm_json_response_async(llm_response, expected_type="array")
+        except Exception as parse_error:
+            logger.error(f"❌ Failed to parse JSON response: {parse_error}")
+            logger.debug(f"   Response text: {llm_response[:500]}")
+            raise ValueError(f"Invalid JSON response from LLM: {parse_error}")
         
         # Validate and convert to DayTheme objects
         curriculum: list[DayTheme] = []

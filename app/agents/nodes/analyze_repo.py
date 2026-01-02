@@ -4,12 +4,11 @@ This node uses Qdrant embeddings to retrieve relevant code context.
 """
 
 import logging
-import json
-import re
 from app.agents.state import RoadmapAgentState, RepoAnalysis
 from app.services.rag_pipeline import generate_rag_response
 from app.services.groq_service import get_groq_service
 from app.agents.prompts import REPO_ANALYSIS_PROMPT
+from app.utils.json_parser import parse_llm_json_response_async
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,8 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
     )
     
     try:
-        llm_response = groq_service.generate_response(
+        # Use async version with rate limiting
+        llm_response = await groq_service.generate_response_async(
             user_query=prompt,
             system_prompt=system_prompt,
             context="",  # Context already in prompt
@@ -93,52 +93,13 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
         logger.debug(f"   LLM response length: {len(llm_response)} chars")
         logger.debug(f"   Raw LLM response: {llm_response[:200]}...")
         
-        # Step 3: Parse JSON response
-        # Try to extract JSON from response (handle markdown code blocks and extra text)
-        response_text = llm_response.strip()
-        
-        # Remove markdown code blocks if present
-        if "```" in response_text:
-            # Find JSON code block
-            json_start = response_text.find("```json")
-            if json_start == -1:
-                json_start = response_text.find("```")
-            else:
-                json_start += 7  # Skip ```json
-            json_end = response_text.rfind("```")
-            if json_start != -1 and json_end != -1 and json_end > json_start:
-                response_text = response_text[json_start:json_end].strip()
-        
-        # Try to find JSON object in the text (in case there's extra text)
-        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
-        if json_match:
-            response_text = json_match.group(0)
-        
-        # Clean up common issues
-        response_text = response_text.strip()
-        if not response_text:
-            logger.error(f"❌ Empty response after parsing. Original response: {llm_response[:500]}")
-            raise ValueError("LLM returned empty or invalid response")
-        
-        # Parse JSON
+        # Step 3: Parse JSON response using async parser (supports sanitizer)
         try:
-            analysis_dict = json.loads(response_text)
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ Failed to parse JSON response: {e}")
-            logger.error(f"   Attempted to parse: {response_text[:500]}")
+            analysis_dict = await parse_llm_json_response_async(llm_response, expected_type="object")
+        except Exception as parse_error:
+            logger.error(f"❌ Failed to parse JSON response: {parse_error}")
             logger.error(f"   Original response: {llm_response[:500]}")
-            # Try one more time with more aggressive cleaning
-            try:
-                # Remove any leading/trailing non-JSON text
-                cleaned = re.sub(r'^[^{]*', '', response_text)
-                cleaned = re.sub(r'[^}]*$', '', cleaned)
-                if cleaned:
-                    analysis_dict = json.loads(cleaned)
-                    logger.warning(f"⚠️  Successfully parsed after aggressive cleaning")
-                else:
-                    raise ValueError("Could not extract valid JSON from response")
-            except:
-                raise ValueError(f"Invalid JSON response from LLM: {e}. Response: {response_text[:200]}")
+            raise ValueError(f"Invalid JSON response from LLM: {parse_error}")
         
         # Step 4: Create RepoAnalysis object
         repo_analysis: RepoAnalysis = {

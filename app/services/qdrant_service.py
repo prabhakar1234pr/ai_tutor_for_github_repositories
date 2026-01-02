@@ -369,15 +369,29 @@ class QdrantService:
             ]
         )
 
-        # Use query_points method (qdrant-client >= 1.7.0)
-        result = self.client.query_points(
+        # Use search method (compatible with all qdrant-client versions)
+        try:
+            # Try query_points first (qdrant-client >= 1.7.0)
+            if hasattr(self.client, 'query_points'):
+                result = self.client.query_points(
+                    collection_name=COLLECTION_NAME,
+                    query=query_embedding,
+                    query_filter=query_filter,
+                    limit=limit,
+                )
+                return result.points
+        except AttributeError:
+            pass
+        
+        # Fallback to search method (older versions)
+        result = self.client.search(
             collection_name=COLLECTION_NAME,
-            query=query_embedding,
+            query_vector=query_embedding,
             query_filter=query_filter,
             limit=limit,
         )
-
-        return result.points
+        
+        return result
 
 
     

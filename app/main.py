@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from app.api.chatbot import router as chatbot_router
 from app.api.roadmap import router as roadmap_router
 from app.api.progress import router as progress_router
+from app.core.startup import startup_services, shutdown_services
 
 # Configure logging from settings
 logging.basicConfig(level=settings.log_level)
@@ -64,11 +65,20 @@ async def lifespan(_app: FastAPI):
     logging.info(f"  JWT Algorithm: {settings.jwt_algorithm}")
     logging.info(f"  JWT Expiration: {settings.jwt_expiration_minutes} minutes")
     
+    # Initialize services (rate limiter, etc.)
+    try:
+        await startup_services()
+    except Exception as e:
+        logging.warning(f"⚠️  Service initialization warning: {e}")
+    
     logging.info("=" * 60)
     logging.info("✅ Startup complete - Ready to accept requests")
     logging.info("=" * 60)
     
     yield  # App runs here
+    
+    # Shutdown services
+    await shutdown_services()
     
     # Shutdown: Code that runs when the app shuts down
     logging.info("=" * 60)

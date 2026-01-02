@@ -5,6 +5,7 @@ These nodes generate concepts, subconcepts, and tasks.
 
 import logging
 import json
+import asyncio
 from app.agents.state import RoadmapAgentState, ConceptData
 from app.services.groq_service import get_groq_service
 from app.agents.prompts import (
@@ -14,6 +15,12 @@ from app.agents.prompts import (
 )
 from app.agents.day0 import get_day_0_content
 from app.core.supabase_client import get_supabase_client
+from app.utils.json_parser import parse_llm_json_response_async
+from app.utils.type_validator import (
+    validate_and_normalize_subconcepts,
+    validate_and_normalize_tasks,
+    validate_concept
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +105,7 @@ def select_next_incomplete_day(state: RoadmapAgentState) -> RoadmapAgentState:
         return state
 
 
-def generate_concepts_for_day(state: RoadmapAgentState) -> RoadmapAgentState:
+async def generate_concepts_for_day(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Generate concept titles for the current day.
     
@@ -162,22 +169,15 @@ def generate_concepts_for_day(state: RoadmapAgentState) -> RoadmapAgentState:
     )
     
     try:
-        llm_response = groq_service.generate_response(
+        # Use async version with rate limiting
+        llm_response = await groq_service.generate_response_async(
             user_query=prompt,
             system_prompt=system_prompt,
             context="",
         )
         
-        # Parse JSON
-        response_text = llm_response.strip()
-        if response_text.startswith("```"):
-            start_idx = response_text.find("```") + 3
-            if response_text[start_idx:start_idx+5] == "json":
-                start_idx += 5
-            end_idx = response_text.rfind("```")
-            response_text = response_text[start_idx:end_idx].strip()
-        
-        concepts_list = json.loads(response_text)
+        # Parse JSON using robust parser (async version with sanitizer support)
+        concepts_list = await parse_llm_json_response_async(llm_response, expected_type="array")
         
         # Convert to ConceptData objects (without subconcepts/tasks yet)
         current_concepts: list[ConceptData] = []
@@ -206,7 +206,7 @@ def generate_concepts_for_day(state: RoadmapAgentState) -> RoadmapAgentState:
         return state
 
 
-def generate_subconcepts_and_tasks(state: RoadmapAgentState) -> RoadmapAgentState:
+async def generate_subconcepts_and_tasks(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Generate subconcepts and tasks for the current concept.
     
@@ -247,24 +247,22 @@ def generate_subconcepts_and_tasks(state: RoadmapAgentState) -> RoadmapAgentStat
         )
         
         logger.debug("   Calling LLM for subconcepts...")
-        subconcepts_response = groq_service.generate_response(
+        subconcepts_response = await groq_service.generate_response_async(
             user_query=subconcepts_prompt,
             system_prompt="You are an expert educator. Return ONLY valid JSON array, no markdown.",
             context="",
         )
         
-        # Parse subconcepts JSON
-        subconcepts_text = subconcepts_response.strip()
-        if subconcepts_text.startswith("```"):
-            start_idx = subconcepts_text.find("```") + 3
-            if subconcepts_text[start_idx:start_idx+5] == "json":
-                start_idx += 5
-            end_idx = subconcepts_text.rfind("```")
-            subconcepts_text = subconcepts_text[start_idx:end_idx].strip()
-        
-        subconcepts_list = json.loads(subconcepts_text)
-        concept["subconcepts"] = subconcepts_list
-        logger.debug(f"   Generated {len(subconcepts_list)} subconcepts")
+        # Parse and validate subconcepts JSON
+        try:
+            subconcepts_raw = await parse_llm_json_response_async(subconcepts_response, expected_type="array")
+            # Validate and normalize subconcepts
+            concept["subconcepts"] = validate_and_normalize_subconcepts(subconcepts_raw)
+            logger.debug(f"   Generated {len(concept['subconcepts'])} valid subconcepts")
+        except Exception as parse_error:
+            logger.warning(f"⚠️  Failed to parse subconcepts JSON, using empty array: {parse_error}")
+            logger.debug(f"   Response was: {subconcepts_response[:500]}")
+            concept["subconcepts"] = []  # Fallback to empty array
         
         # Generate tasks
         tasks_prompt = TASKS_GENERATION_PROMPT.format(
@@ -275,28 +273,22 @@ def generate_subconcepts_and_tasks(state: RoadmapAgentState) -> RoadmapAgentStat
         )
         
         logger.debug("   Calling LLM for tasks...")
-        tasks_response = groq_service.generate_response(
+        tasks_response = await groq_service.generate_response_async(
             user_query=tasks_prompt,
             system_prompt="You are an expert educator. Return ONLY valid JSON array, no markdown.",
             context="",
         )
         
-        # Parse tasks JSON
-        tasks_text = tasks_response.strip()
-        if tasks_text.startswith("```"):
-            start_idx = tasks_text.find("```") + 3
-            if tasks_text[start_idx:start_idx+5] == "json":
-                start_idx += 5
-            end_idx = tasks_text.rfind("```")
-            tasks_text = tasks_text[start_idx:end_idx].strip()
-        
-        tasks_list = json.loads(tasks_text)
-        # Ensure all tasks have task_type="coding" (unless Day 0)
-        for task in tasks_list:
-            if "task_type" not in task:
-                task["task_type"] = "coding"
-        concept["tasks"] = tasks_list
-        logger.debug(f"   Generated {len(tasks_list)} tasks")
+        # Parse and validate tasks JSON
+        try:
+            tasks_raw = await parse_llm_json_response_async(tasks_response, expected_type="array")
+            # Validate and normalize tasks (ensures task_type is set)
+            concept["tasks"] = validate_and_normalize_tasks(tasks_raw)
+            logger.debug(f"   Generated {len(concept['tasks'])} valid tasks")
+        except Exception as parse_error:
+            logger.warning(f"⚠️  Failed to parse tasks JSON, using empty array: {parse_error}")
+            logger.debug(f"   Response was: {tasks_response[:500]}")
+            concept["tasks"] = []  # Fallback to empty array
         
         logger.info(f"✅ Generated content for concept: {concept['title']}")
         
@@ -307,6 +299,11 @@ def generate_subconcepts_and_tasks(state: RoadmapAgentState) -> RoadmapAgentStat
         
     except Exception as e:
         logger.error(f"❌ Failed to generate subconcepts/tasks: {e}", exc_info=True)
-        state["error"] = f"Failed to generate content for concept: {str(e)}"
+        # Set empty arrays as fallback so the concept can still be saved and graph can continue
+        concept["subconcepts"] = concept.get("subconcepts", [])
+        concept["tasks"] = concept.get("tasks", [])
+        logger.warning(f"⚠️  Using empty arrays for concept '{concept['title']}' to allow graph to continue")
+        # Don't set error state - allow graph to continue with partial data
+        state["current_concepts"] = current_concepts
         return state
 

@@ -23,8 +23,10 @@ dependencies = [
     { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "qdrant-client" },
+    { name = "redis" },
     { name = "sentence-transformers" },
     { name = "supabase" },
+    { name = "tenacity" },
     { name = "tiktoken" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -56,8 +58,10 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.12.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "qdrant-client", specifier = ">=1.16.2" },
+    { name = "redis", specifier = ">=5.0.0" },
     { name = "sentence-transformers", specifier = ">=2.2.0" },
     { name = "supabase", specifier = ">=2.0.0" },
+    { name = "tenacity", specifier = ">=8.2.0" },
     { name = "tiktoken", specifier = ">=0.12.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
 ]
@@ -1886,6 +1890,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4a/47/4e8b746c39b87bc72757c14776d6a456661401215a11404fd8ded5c906e6/realtime-2.27.0.tar.gz", hash = "sha256:70f6b5f67615817d60a62c32a06f7f69f3caa5c470524778f486f1733b473e35", size = 18536 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/35/e9d9c8b7aa4a11df18bb0e4e5d135d5d1236eb500e922bf68f41da30bdef/realtime-2.27.0-py3-none-any.whl", hash = "sha256:3a7444116ebed9b6a497d00acc51a3175bbf9819cfcc5c929a2b25ad9b7ddba6", size = 22139 },
+]
+
+[[package]]
+name = "redis"
+version = "7.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/43/c8/983d5c6579a411d8a99bc5823cc5712768859b5ce2c8afe1a65b37832c81/redis-7.1.0.tar.gz", hash = "sha256:b1cc3cfa5a2cb9c2ab3ba700864fb0ad75617b41f01352ce5779dabf6d5f9c3c", size = 4796669 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/89/f0/8956f8a86b20d7bb9d6ac0187cf4cd54d8065bc9a1a09eb8011d4d326596/redis-7.1.0-py3-none-any.whl", hash = "sha256:23c52b208f92b56103e17c5d06bdc1a6c2c0b3106583985a76a18f83b265de2b", size = 354159 },
 ]
 
 [[package]]

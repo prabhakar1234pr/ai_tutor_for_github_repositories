@@ -186,11 +186,11 @@ Variables are containers that store data values. Think of them as labeled boxes 
 - Use descriptive names for clarity
 
 **Example:**
-\`\`\`python
+```python
 name = "Alice"
 age = 25
 is_student = True
-\`\`\`
+```
 
 In this example, we store a person's information in three variables.
 ```
@@ -210,13 +210,36 @@ In this example, we store a person's information in three variables.
   ...
 ]
 
-**CRITICAL:** 
-- Return ONLY the JSON array
-- Include 2-4 subconcepts
-- Content must be in markdown format
-- Escape quotes properly in JSON
-- Do NOT include unescaped newline characters inside JSON strings
-- Include code examples where relevant
+**CRITICAL JSON FORMATTING RULES:**
+1. Return ONLY a JSON array - NO markdown code blocks, NO explanatory text
+2. Start with [ and end with ]
+3. Escape ALL special characters in strings:
+   - Newlines: use \\n (double backslash + n)
+   - Quotes: use \\" (double backslash + quote)
+   - Backslashes: use \\\\ (four backslashes)
+4. Do NOT include markdown code blocks (```) anywhere in the JSON
+5. Do NOT include code examples as separate blocks - embed them in the content string
+6. All strings must use double quotes
+7. Content field should contain markdown as a properly escaped JSON string
+
+**VALIDATION CHECKLIST:**
+- [ ] Response starts with [ and ends with ]
+- [ ] All strings use double quotes
+- [ ] All newlines escaped as \\n
+- [ ] All quotes escaped as \\"
+- [ ] No markdown code blocks (```) anywhere
+- [ ] Valid JSON that passes json.loads() validation
+
+**Example of CORRECT format:**
+[
+  {{
+    "order_index": 1,
+    "title": "What are Variables?",
+    "content": "# What are Variables?\\n\\nVariables are containers.\\n\\n**Example:**\\n\\n```python\\nname = \\\"Alice\\\"\\n```"
+  }}
+]
+
+**Your response MUST be valid JSON that can be parsed directly.**
 """
 
 # ===== TASKS GENERATION PROMPT =====
@@ -261,10 +284,33 @@ Generate 3-5 hands-on coding tasks that let students apply this concept.
   ...
 ]
 
-**CRITICAL:** 
-- Return ONLY the JSON array
-- Include 3-5 tasks
-- task_type is always "coding" for regular days
-- Descriptions should be clear and specific
-- Order tasks from easiest to hardest
+**CRITICAL JSON FORMATTING RULES:**
+1. Return ONLY a JSON array - NO markdown code blocks, NO explanatory text
+2. Start with [ and end with ]
+3. Escape ALL special characters in strings:
+   - Newlines: use \\n (double backslash + n)
+   - Quotes: use \\" (double backslash + quote)
+   - Backslashes: use \\\\ (four backslashes)
+4. All strings must use double quotes
+5. task_type must be exactly "coding" (lowercase, in quotes)
+
+**VALIDATION CHECKLIST:**
+- [ ] Response starts with [ and ends with ]
+- [ ] All strings use double quotes
+- [ ] All newlines escaped as \\n
+- [ ] All quotes escaped as \\"
+- [ ] task_type field present and equals "coding"
+- [ ] Valid JSON that passes json.loads() validation
+
+**Example of CORRECT format:**
+[
+  {{
+    "order_index": 1,
+    "title": "Create Variables",
+    "description": "Create three variables: name, age, and email. Print them.",
+    "task_type": "coding"
+  }}
+]
+
+**Your response MUST be valid JSON that can be parsed directly.**
 """

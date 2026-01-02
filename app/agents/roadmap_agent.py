@@ -27,6 +27,7 @@ from app.agents.nodes.generate_content import (
     generate_concepts_for_day,
     generate_subconcepts_and_tasks,
 )
+from app.agents.nodes.recovery import recover_failed_concepts
 
 
 def should_continue_generation(state: RoadmapAgentState) -> Literal["generate_content", "end"]:
@@ -122,6 +123,9 @@ def build_roadmap_graph() -> StateGraph:
     workflow.add_node("save_concept_content", save_concept_content)
     workflow.add_node("mark_day_complete", mark_day_generated)
     
+    # ===== RECOVERY PHASE =====
+    workflow.add_node("recover_failed_concepts", recover_failed_concepts)
+    
     # ===== EDGES =====
     
     # Start: fetch context
@@ -175,9 +179,12 @@ def build_roadmap_graph() -> StateGraph:
         should_continue_generation,
         {
             "generate_content": "select_next_day",
-            "end": END,
+            "end": "recover_failed_concepts",  # Go to recovery before ending
         }
     )
+    
+    # After recovery, end the workflow
+    workflow.add_edge("recover_failed_concepts", END)
     
     # Compile the graph
     graph = workflow.compile()
@@ -255,8 +262,15 @@ async def run_roadmap_agent(
         # Get graph and run
         graph = get_roadmap_graph()
         
+        # Calculate recursion limit: 
+        # - Day 0: 1 iteration
+        # - Each day: 1 (select) + 1 (concepts) + N concepts (subconcepts/tasks) + 1 (mark complete)
+        # - For 14 days with ~4 concepts each: ~1 + 14 * (1 + 1 + 4 + 1) = ~99 iterations
+        # Set limit to 150 to be safe
+        config = {"recursion_limit": 150}
+        
         # Run the graph (LangGraph handles async execution)
-        final_state = await graph.ainvoke(initial_state)
+        final_state = await graph.ainvoke(initial_state, config=config)
         
         if final_state.get("error"):
             logger.error(f"❌ Roadmap generation failed: {final_state['error']}")

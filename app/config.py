@@ -93,11 +93,14 @@ class Settings(BaseSettings):
 
     # LLM API Keys - Groq (Development)
     groq_api_key: Optional[str] = None
-    groq_model: str = "meta-llama/llama-4-maverick-17b-128e-instruct"
-    
+    groq_model: str = "llama-3.1-70b-instruct"
+    groq_sanitizer_model: str = "openai/gpt-oss-120b"  # Model for JSON sanitization (when main model returns markdown/code)
+    groq_sanitizer_enabled: bool = True  # Enable/disable sanitizer
     # GitHub API
     github_access_token: Optional[str] = None  # Maps to GITHUB_ACCESS_TOKEN
     
+    # Redis (for rate limiting and caching)
+    redis_url: Optional[str] = None  # Maps to REDIS_URL (e.g., redis://localhost:6379/0)
     
     # Logging
     log_level: str = "INFO"

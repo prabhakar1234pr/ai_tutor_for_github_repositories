@@ -8,8 +8,16 @@ from typing import Dict, List
 from app.agents.state import RoadmapAgentState, DayTheme, ConceptData
 from app.core.supabase_client import get_supabase_client
 from app.agents.day0 import get_day_0_content
+import httpx
 
 logger = logging.getLogger(__name__)
+
+# Import postgrest exception if available
+try:
+    from postgrest.exceptions import APIError as PostgrestAPIError
+except ImportError:
+    # Fallback if postgrest is not available
+    PostgrestAPIError = Exception
 
 
 def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
@@ -305,32 +313,94 @@ def save_concept_content(state: RoadmapAgentState) -> RoadmapAgentState:
         if concept.get("subconcepts"):
             subconcepts_to_insert = []
             for subconcept in concept["subconcepts"]:
-                subconcepts_to_insert.append({
-                    "concept_id": concept_id,
-                    "order_index": subconcept["order_index"],
-                    "title": subconcept["title"],
-                    "content": subconcept["content"],
-                    "generated_status": "generated",
-                })
+                # Type guard - ensure subconcept is a dict
+                if not isinstance(subconcept, dict):
+                    logger.warning(f"⚠️  Skipping invalid subconcept (type: {type(subconcept).__name__})")
+                    continue
+                
+                try:
+                    subconcepts_to_insert.append({
+                        "concept_id": concept_id,
+                        "order_index": int(subconcept.get("order_index", 0)),
+                        "title": str(subconcept.get("title", "")),
+                        "content": str(subconcept.get("content", "")),
+                        "generated_status": "generated",
+                    })
+                except (KeyError, TypeError, ValueError) as e:
+                    logger.warning(f"⚠️  Error processing subconcept: {e}, skipping")
+                    continue
             
-            supabase.table("sub_concepts").insert(subconcepts_to_insert).execute()
-            logger.debug(f"   Inserted {len(subconcepts_to_insert)} subconcepts")
+            try:
+                supabase.table("sub_concepts").insert(subconcepts_to_insert).execute()
+                logger.debug(f"   Inserted {len(subconcepts_to_insert)} subconcepts")
+            except PostgrestAPIError as db_error:
+                error_msg = str(db_error)
+                if "duplicate key" in error_msg.lower() or "unique constraint" in error_msg.lower():
+                    logger.warning(f"⚠️  Duplicate subconcepts detected for concept '{concept['title']}', skipping insert")
+                else:
+                    raise
+            except httpx.HTTPStatusError as http_error:
+                if http_error.response.status_code == 429:
+                    logger.warning(f"⚠️  Rate limit hit while inserting subconcepts for '{concept['title']}', will retry later")
+                    # Mark concept as generating_with_errors and continue
+                    supabase.table("concepts").update({
+                        "generated_status": "generating_with_errors"
+                    }).eq("concept_id", concept_id).execute()
+                    state["current_concept_index"] = current_concept_index + 1
+                    return state
+                else:
+                    raise
         
         # Insert tasks
         if concept.get("tasks"):
             tasks_to_insert = []
             for task in concept["tasks"]:
-                tasks_to_insert.append({
-                    "concept_id": concept_id,
-                    "order_index": task["order_index"],
-                    "title": task["title"],
-                    "description": task["description"],
-                    "task_type": task["task_type"],
-                    "generated_status": "generated",
-                })
+                # Type guard - ensure task is a dict
+                if not isinstance(task, dict):
+                    logger.warning(f"⚠️  Skipping invalid task (type: {type(task).__name__})")
+                    continue
+                
+                try:
+                    tasks_to_insert.append({
+                        "concept_id": concept_id,
+                        "order_index": int(task.get("order_index", 0)),
+                        "title": str(task.get("title", "")),
+                        "description": str(task.get("description", "")),
+                        "task_type": str(task.get("task_type", "coding")),
+                        "generated_status": "generated",
+                    })
+                except (KeyError, TypeError, ValueError) as e:
+                    logger.warning(f"⚠️  Error processing task: {e}, skipping")
+                    continue
             
-            supabase.table("tasks").insert(tasks_to_insert).execute()
-            logger.debug(f"   Inserted {len(tasks_to_insert)} tasks")
+            try:
+                supabase.table("tasks").insert(tasks_to_insert).execute()
+                logger.debug(f"   Inserted {len(tasks_to_insert)} tasks")
+            except PostgrestAPIError as db_error:
+                error_msg = str(db_error)
+                if "duplicate key" in error_msg.lower() or "unique constraint" in error_msg.lower():
+                    logger.warning(f"⚠️  Duplicate tasks detected for concept '{concept['title']}', skipping insert")
+                else:
+                    raise
+            except httpx.HTTPStatusError as http_error:
+                if http_error.response.status_code == 429:
+                    logger.warning(f"⚠️  Rate limit hit while inserting tasks for '{concept['title']}', will retry later")
+                    # Mark concept as generating_with_errors and continue
+                    supabase.table("concepts").update({
+                        "generated_status": "generating_with_errors"
+                    }).eq("concept_id", concept_id).execute()
+                    state["current_concept_index"] = current_concept_index + 1
+                    return state
+                else:
+                    raise
+            except httpx.RemoteProtocolError as protocol_error:
+                logger.warning(f"⚠️  Connection error while inserting tasks for '{concept['title']}': {protocol_error}")
+                # Mark concept as generating_with_errors and continue
+                supabase.table("concepts").update({
+                    "generated_status": "generating_with_errors"
+                }).eq("concept_id", concept_id).execute()
+                state["current_concept_index"] = current_concept_index + 1
+                return state
         
         # Mark concept as generated
         supabase.table("concepts").update({
@@ -344,9 +414,52 @@ def save_concept_content(state: RoadmapAgentState) -> RoadmapAgentState:
         
         return state
         
+    except (PostgrestAPIError, httpx.HTTPStatusError, httpx.RemoteProtocolError) as e:
+        # Handle database/network errors gracefully
+        error_msg = str(e)
+        if isinstance(e, PostgrestAPIError) and ("duplicate key" in error_msg.lower() or "unique constraint" in error_msg.lower()):
+            logger.warning(f"⚠️  Duplicate key error for concept '{concept['title']}', marking as generated_with_errors and continuing")
+            try:
+                supabase.table("concepts").update({
+                    "generated_status": "generated_with_errors"
+                }).eq("concept_id", concept_id).execute()
+            except:
+                pass  # If update fails, continue anyway
+            state["current_concept_index"] = current_concept_index + 1
+            return state
+        elif isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+            logger.warning(f"⚠️  Rate limit hit for concept '{concept['title']}', marking as generating_with_errors and continuing")
+            try:
+                supabase.table("concepts").update({
+                    "generated_status": "generating_with_errors"
+                }).eq("concept_id", concept_id).execute()
+            except:
+                pass
+            state["current_concept_index"] = current_concept_index + 1
+            return state
+        else:
+            # For other errors, log and continue with partial data
+            logger.error(f"❌ Failed to save concept content for '{concept['title']}': {e}", exc_info=True)
+            try:
+                supabase.table("concepts").update({
+                    "generated_status": "generated_with_errors"
+                }).eq("concept_id", concept_id).execute()
+            except:
+                pass
+            # Don't set error state - allow graph to continue
+            state["current_concept_index"] = current_concept_index + 1
+            return state
     except Exception as e:
-        logger.error(f"❌ Failed to save concept content: {e}", exc_info=True)
-        state["error"] = f"Failed to save concept content: {str(e)}"
+        # For unexpected errors, log and continue
+        logger.error(f"❌ Unexpected error saving concept content for '{concept['title']}': {e}", exc_info=True)
+        try:
+            supabase.table("concepts").update({
+                "generated_status": "generated_with_errors"
+            }).eq("concept_id", concept_id).execute()
+        except:
+            pass
+        # Don't set error state - allow graph to continue
+        state["current_concept_index"] = current_concept_index + 1
         return state
 
 
