@@ -216,3 +216,67 @@ async def get_generation_status(
         logger.error(f"Error fetching generation status: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch generation status: {str(e)}")
 
+
+@router.get("/task/{task_id}")
+async def get_task_details(
+    task_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client)
+):
+    """
+    Get task details with related concept and project information.
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+        
+        # Get user_id
+        user_response = supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        if not user_response.data:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_id = user_response.data[0]["id"]
+        
+        # Get task
+        task_response = supabase.table("tasks").select("*").eq("task_id", task_id).execute()
+        if not task_response.data:
+            raise HTTPException(status_code=404, detail="Task not found")
+        
+        task = task_response.data[0]
+        concept_id = task["concept_id"]
+        
+        # Get concept
+        concept_response = supabase.table("concepts").select("*").eq("concept_id", concept_id).execute()
+        if not concept_response.data:
+            raise HTTPException(status_code=404, detail="Concept not found")
+        
+        concept = concept_response.data[0]
+        day_id = concept["day_id"]
+        
+        # Get day
+        day_response = supabase.table("roadmap_days").select("*").eq("day_id", day_id).execute()
+        if not day_response.data:
+            raise HTTPException(status_code=404, detail="Day not found")
+        
+        day = day_response.data[0]
+        project_id = day["project_id"]
+        
+        # Verify project belongs to user
+        project_response = supabase.table("Projects").select("*").eq("project_id", project_id).eq("user_id", user_id).execute()
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+        
+        project = project_response.data[0]
+        
+        return {
+            "success": True,
+            "task": task,
+            "concept": concept,
+            "day": day,
+            "project": project
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching task details: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to fetch task details: {str(e)}")
