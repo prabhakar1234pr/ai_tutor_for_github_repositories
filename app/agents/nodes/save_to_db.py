@@ -1,6 +1,7 @@
 """
 Database operations for saving roadmap content.
 All nodes that write to Supabase database.
+Saves concepts with content field and tasks with new fields (difficulty, hints, estimated_minutes).
 """
 
 import logging
@@ -8,6 +9,7 @@ from typing import Dict, List
 from app.agents.state import RoadmapAgentState, DayTheme, ConceptData
 from app.core.supabase_client import get_supabase_client
 from app.agents.day0 import get_day_0_content
+from app.utils.markdown_sanitizer import sanitize_markdown_content
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -16,22 +18,13 @@ logger = logging.getLogger(__name__)
 try:
     from postgrest.exceptions import APIError as PostgrestAPIError
 except ImportError:
-    # Fallback if postgrest is not available
     PostgrestAPIError = Exception
 
 
 def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Insert all day themes into roadmap_days table.
-    
-    This creates rows for all days (including Day 0) with generated_status='pending'.
-    Later nodes will update these rows as content is generated.
-    
-    Args:
-        state: Current agent state (must have curriculum)
-        
-    Returns:
-        Updated state with day_ids stored (we'll store them in a dict)
+    Includes estimated_minutes for each day.
     """
     project_id = state["project_id"]
     curriculum = state.get("curriculum", [])
@@ -51,6 +44,7 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
         "day_number": 0,
         "theme": day0_theme["theme"],
         "description": day0_theme["description"],
+        "estimated_minutes": 30,  # Day 0 is quick
         "generated_status": "pending",
     })
     
@@ -61,6 +55,7 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
             "day_number": theme["day_number"],
             "theme": theme["theme"],
             "description": theme["description"],
+            "estimated_minutes": theme.get("estimated_minutes", 60),
             "generated_status": "pending",
         })
     
@@ -71,7 +66,7 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
         if not response.data:
             raise ValueError("Failed to insert days into database")
         
-        # Store day_ids in state (we'll use a dict mapping day_number -> day_id)
+        # Store day_ids in state
         day_ids_map: Dict[int, str] = {}
         for day_data in response.data:
             day_number = day_data["day_number"]
@@ -79,18 +74,12 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
             day_ids_map[day_number] = day_id
         
         logger.info(f"✅ Inserted {len(response.data)} days into database")
-        logger.debug(f"   Day IDs: {list(day_ids_map.keys())}")
         
-        # Verify Day 0 is in the map
         if 0 not in day_ids_map:
-            logger.error(f"❌ Day 0 not found in inserted days! Day numbers: {sorted(day_ids_map.keys())}")
+            logger.error(f"❌ Day 0 not found in inserted days!")
             raise ValueError("Day 0 was not inserted correctly")
         
-        logger.debug(f"   Day 0 ID: {day_ids_map[0]}")
-        
-        # Store in state
         state["day_ids_map"] = day_ids_map
-        
         return state
         
     except Exception as e:
@@ -101,13 +90,8 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
 
 def save_day0_content(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Save Day 0 content (concepts, subconcepts, tasks) to database.
-    
-    Args:
-        state: Current agent state (must have Day 0 content)
-        
-    Returns:
-        Updated state
+    Save Day 0 content (concepts with content field, and tasks) to database.
+    No longer uses sub_concepts table.
     """
     project_id = state["project_id"]
     day_ids_map = state.get("day_ids_map") or {}
@@ -128,7 +112,6 @@ def save_day0_content(state: RoadmapAgentState) -> RoadmapAgentState:
         if day_response.data and len(day_response.data) > 0:
             day0_id = day_response.data[0]["day_id"]
             logger.info(f"✅ Found Day 0 ID from database: {day0_id}")
-            # Update state with the found ID
             if not state.get("day_ids_map"):
                 state["day_ids_map"] = {}
             state["day_ids_map"][0] = day0_id
@@ -144,15 +127,19 @@ def save_day0_content(state: RoadmapAgentState) -> RoadmapAgentState:
     supabase = get_supabase_client()
     
     try:
-        # Insert concepts
+        # Insert concepts with content field (sanitize markdown before saving)
         concepts_to_insert = []
         for concept in day0_concepts:
+            raw_content = concept.get("content", "")
+            sanitized_content = sanitize_markdown_content(raw_content)
             concepts_to_insert.append({
                 "day_id": day0_id,
                 "order_index": concept["order_index"],
                 "title": concept["title"],
                 "description": concept["description"],
-                "generated_status": "generated",  # Day 0 is pre-generated
+                "content": sanitized_content,
+                "estimated_minutes": concept.get("estimated_minutes", 10),
+                "generated_status": "generated",
             })
         
         concepts_response = supabase.table("concepts").insert(concepts_to_insert).execute()
@@ -169,26 +156,10 @@ def save_day0_content(state: RoadmapAgentState) -> RoadmapAgentState:
             concept_id = concept_data["concept_id"]
             concept_ids_map[order_idx] = concept_id
         
-        # Insert subconcepts and tasks
+        # Insert tasks for each concept
         for concept in day0_concepts:
             concept_id = concept_ids_map[concept["order_index"]]
             
-            # Insert subconcepts
-            if concept.get("subconcepts"):
-                subconcepts_to_insert = []
-                for subconcept in concept["subconcepts"]:
-                    subconcepts_to_insert.append({
-                        "concept_id": concept_id,
-                        "order_index": subconcept["order_index"],
-                        "title": subconcept["title"],
-                        "content": subconcept["content"],
-                        "generated_status": "generated",
-                    })
-                
-                supabase.table("sub_concepts").insert(subconcepts_to_insert).execute()
-                logger.debug(f"   Inserted {len(subconcepts_to_insert)} subconcepts for concept {concept['title']}")
-            
-            # Insert tasks
             if concept.get("tasks"):
                 tasks_to_insert = []
                 for task in concept["tasks"]:
@@ -198,6 +169,10 @@ def save_day0_content(state: RoadmapAgentState) -> RoadmapAgentState:
                         "title": task["title"],
                         "description": task["description"],
                         "task_type": task["task_type"],
+                        "estimated_minutes": task.get("estimated_minutes", 15),
+                        "difficulty": task.get("difficulty", "medium"),
+                        "hints": task.get("hints", []),
+                        "solution": task.get("solution"),
                         "generated_status": "generated",
                     })
                 
@@ -221,13 +196,7 @@ def save_day0_content(state: RoadmapAgentState) -> RoadmapAgentState:
 
 def save_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Save concept titles to database (before generating subconcepts/tasks).
-    
-    Args:
-        state: Current agent state (must have current_concepts)
-        
-    Returns:
-        Updated state with concept_ids stored
+    Save concept titles to database (before generating content/tasks).
     """
     day_id = state.get("current_day_id")
     current_concepts = state.get("current_concepts", [])
@@ -243,7 +212,7 @@ def save_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     supabase = get_supabase_client()
     
     try:
-        # Insert concepts with generated_status='generating'
+        # Insert concepts with generating status
         concepts_to_insert = []
         for concept in current_concepts:
             concepts_to_insert.append({
@@ -251,6 +220,7 @@ def save_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
                 "order_index": concept["order_index"],
                 "title": concept["title"],
                 "description": concept.get("description", ""),
+                "estimated_minutes": concept.get("estimated_minutes", 10),
                 "generated_status": "generating",
             })
         
@@ -259,7 +229,7 @@ def save_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
         if not response.data:
             raise ValueError("Failed to insert concepts")
         
-        # Store concept_ids in state (mapping order_index -> concept_id)
+        # Store concept_ids in state
         concept_ids_map: Dict[int, str] = {}
         for concept_data in response.data:
             order_idx = concept_data["order_index"]
@@ -268,9 +238,8 @@ def save_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
         
         logger.info(f"✅ Inserted {len(response.data)} concepts")
         
-        # Update state
         state["concept_ids_map"] = concept_ids_map
-        state["current_concept_index"] = 0  # Start from first concept
+        state["current_concept_index"] = 0
         
         return state
         
@@ -282,13 +251,8 @@ def save_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
 
 def save_concept_content(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Save subconcepts and tasks for the current concept.
-    
-    Args:
-        state: Current agent state (must have current_concepts with content)
-        
-    Returns:
-        Updated state (increments current_concept_index)
+    Save content and tasks for the current concept.
+    Content is saved directly to the concept, not to sub_concepts table.
     """
     current_concepts = state.get("current_concepts", [])
     current_concept_index = state.get("current_concept_index", 0)
@@ -309,53 +273,21 @@ def save_concept_content(state: RoadmapAgentState) -> RoadmapAgentState:
     supabase = get_supabase_client()
     
     try:
-        # Insert subconcepts
-        if concept.get("subconcepts"):
-            subconcepts_to_insert = []
-            for subconcept in concept["subconcepts"]:
-                # Type guard - ensure subconcept is a dict
-                if not isinstance(subconcept, dict):
-                    logger.warning(f"⚠️  Skipping invalid subconcept (type: {type(subconcept).__name__})")
-                    continue
-                
-                try:
-                    subconcepts_to_insert.append({
-                        "concept_id": concept_id,
-                        "order_index": int(subconcept.get("order_index", 0)),
-                        "title": str(subconcept.get("title", "")),
-                        "content": str(subconcept.get("content", "")),
-                        "generated_status": "generated",
-                    })
-                except (KeyError, TypeError, ValueError) as e:
-                    logger.warning(f"⚠️  Error processing subconcept: {e}, skipping")
-                    continue
-            
-            try:
-                supabase.table("sub_concepts").insert(subconcepts_to_insert).execute()
-                logger.debug(f"   Inserted {len(subconcepts_to_insert)} subconcepts")
-            except PostgrestAPIError as db_error:
-                error_msg = str(db_error)
-                if "duplicate key" in error_msg.lower() or "unique constraint" in error_msg.lower():
-                    logger.warning(f"⚠️  Duplicate subconcepts detected for concept '{concept['title']}', skipping insert")
-                else:
-                    raise
-            except httpx.HTTPStatusError as http_error:
-                if http_error.response.status_code == 429:
-                    logger.warning(f"⚠️  Rate limit hit while inserting subconcepts for '{concept['title']}', will retry later")
-                    # Mark concept as generating_with_errors and continue
-                    supabase.table("concepts").update({
-                        "generated_status": "generating_with_errors"
-                    }).eq("concept_id", concept_id).execute()
-                    state["current_concept_index"] = current_concept_index + 1
-                    return state
-                else:
-                    raise
+        # Update concept with content (sanitize markdown before saving)
+        raw_content = concept.get("content", "")
+        content = sanitize_markdown_content(raw_content)
+        estimated_minutes = concept.get("estimated_minutes", 10)
+        
+        supabase.table("concepts").update({
+            "content": content,
+            "estimated_minutes": estimated_minutes,
+            "generated_status": "generated",
+        }).eq("concept_id", concept_id).execute()
         
         # Insert tasks
         if concept.get("tasks"):
             tasks_to_insert = []
             for task in concept["tasks"]:
-                # Type guard - ensure task is a dict
                 if not isinstance(task, dict):
                     logger.warning(f"⚠️  Skipping invalid task (type: {type(task).__name__})")
                     continue
@@ -367,45 +299,36 @@ def save_concept_content(state: RoadmapAgentState) -> RoadmapAgentState:
                         "title": str(task.get("title", "")),
                         "description": str(task.get("description", "")),
                         "task_type": str(task.get("task_type", "coding")),
+                        "estimated_minutes": int(task.get("estimated_minutes", 15)),
+                        "difficulty": str(task.get("difficulty", "medium")),
+                        "hints": task.get("hints", []),
+                        "solution": task.get("solution"),
                         "generated_status": "generated",
                     })
                 except (KeyError, TypeError, ValueError) as e:
                     logger.warning(f"⚠️  Error processing task: {e}, skipping")
                     continue
             
-            try:
-                supabase.table("tasks").insert(tasks_to_insert).execute()
-                logger.debug(f"   Inserted {len(tasks_to_insert)} tasks")
-            except PostgrestAPIError as db_error:
-                error_msg = str(db_error)
-                if "duplicate key" in error_msg.lower() or "unique constraint" in error_msg.lower():
-                    logger.warning(f"⚠️  Duplicate tasks detected for concept '{concept['title']}', skipping insert")
-                else:
-                    raise
-            except httpx.HTTPStatusError as http_error:
-                if http_error.response.status_code == 429:
-                    logger.warning(f"⚠️  Rate limit hit while inserting tasks for '{concept['title']}', will retry later")
-                    # Mark concept as generating_with_errors and continue
-                    supabase.table("concepts").update({
-                        "generated_status": "generating_with_errors"
-                    }).eq("concept_id", concept_id).execute()
-                    state["current_concept_index"] = current_concept_index + 1
-                    return state
-                else:
-                    raise
-            except httpx.RemoteProtocolError as protocol_error:
-                logger.warning(f"⚠️  Connection error while inserting tasks for '{concept['title']}': {protocol_error}")
-                # Mark concept as generating_with_errors and continue
-                supabase.table("concepts").update({
-                    "generated_status": "generating_with_errors"
-                }).eq("concept_id", concept_id).execute()
-                state["current_concept_index"] = current_concept_index + 1
-                return state
-        
-        # Mark concept as generated
-        supabase.table("concepts").update({
-            "generated_status": "generated"
-        }).eq("concept_id", concept_id).execute()
+            if tasks_to_insert:
+                try:
+                    supabase.table("tasks").insert(tasks_to_insert).execute()
+                    logger.debug(f"   Inserted {len(tasks_to_insert)} tasks")
+                except PostgrestAPIError as db_error:
+                    error_msg = str(db_error)
+                    if "duplicate key" in error_msg.lower() or "unique constraint" in error_msg.lower():
+                        logger.warning(f"⚠️  Duplicate tasks detected, skipping")
+                    else:
+                        raise
+                except httpx.HTTPStatusError as http_error:
+                    if http_error.response.status_code == 429:
+                        logger.warning(f"⚠️  Rate limit hit, will retry later")
+                        supabase.table("concepts").update({
+                            "generated_status": "generating_with_errors"
+                        }).eq("concept_id", concept_id).execute()
+                        state["current_concept_index"] = current_concept_index + 1
+                        return state
+                    else:
+                        raise
         
         logger.info(f"✅ Concept content saved: {concept['title']}")
         
@@ -415,50 +338,24 @@ def save_concept_content(state: RoadmapAgentState) -> RoadmapAgentState:
         return state
         
     except (PostgrestAPIError, httpx.HTTPStatusError, httpx.RemoteProtocolError) as e:
-        # Handle database/network errors gracefully
         error_msg = str(e)
-        if isinstance(e, PostgrestAPIError) and ("duplicate key" in error_msg.lower() or "unique constraint" in error_msg.lower()):
-            logger.warning(f"⚠️  Duplicate key error for concept '{concept['title']}', marking as generated_with_errors and continuing")
-            try:
-                supabase.table("concepts").update({
-                    "generated_status": "generated_with_errors"
-                }).eq("concept_id", concept_id).execute()
-            except:
-                pass  # If update fails, continue anyway
-            state["current_concept_index"] = current_concept_index + 1
-            return state
-        elif isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
-            logger.warning(f"⚠️  Rate limit hit for concept '{concept['title']}', marking as generating_with_errors and continuing")
-            try:
-                supabase.table("concepts").update({
-                    "generated_status": "generating_with_errors"
-                }).eq("concept_id", concept_id).execute()
-            except:
-                pass
-            state["current_concept_index"] = current_concept_index + 1
-            return state
-        else:
-            # For other errors, log and continue with partial data
-            logger.error(f"❌ Failed to save concept content for '{concept['title']}': {e}", exc_info=True)
-            try:
-                supabase.table("concepts").update({
-                    "generated_status": "generated_with_errors"
-                }).eq("concept_id", concept_id).execute()
-            except:
-                pass
-            # Don't set error state - allow graph to continue
-            state["current_concept_index"] = current_concept_index + 1
-            return state
-    except Exception as e:
-        # For unexpected errors, log and continue
-        logger.error(f"❌ Unexpected error saving concept content for '{concept['title']}': {e}", exc_info=True)
+        logger.error(f"❌ Database error for concept '{concept['title']}': {e}")
         try:
             supabase.table("concepts").update({
                 "generated_status": "generated_with_errors"
             }).eq("concept_id", concept_id).execute()
         except:
             pass
-        # Don't set error state - allow graph to continue
+        state["current_concept_index"] = current_concept_index + 1
+        return state
+    except Exception as e:
+        logger.error(f"❌ Unexpected error for concept '{concept['title']}': {e}", exc_info=True)
+        try:
+            supabase.table("concepts").update({
+                "generated_status": "generated_with_errors"
+            }).eq("concept_id", concept_id).execute()
+        except:
+            pass
         state["current_concept_index"] = current_concept_index + 1
         return state
 
@@ -466,12 +363,6 @@ def save_concept_content(state: RoadmapAgentState) -> RoadmapAgentState:
 def mark_day_generated(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Mark the current day as fully generated.
-    
-    Args:
-        state: Current agent state
-        
-    Returns:
-        Updated state
     """
     day_id = state.get("current_day_id")
     current_day_number = state.get("current_day_number", 0)
@@ -492,7 +383,7 @@ def mark_day_generated(state: RoadmapAgentState) -> RoadmapAgentState:
         
         # Check if all days are complete
         target_days = state["target_days"]
-        if current_day_number >= target_days - 1:  # Days 0 to target_days-1
+        if current_day_number >= target_days - 1:
             state["is_complete"] = True
             logger.info(f"🎉 All {target_days} days generated!")
         
@@ -502,4 +393,3 @@ def mark_day_generated(state: RoadmapAgentState) -> RoadmapAgentState:
         logger.error(f"❌ Failed to mark day as generated: {e}", exc_info=True)
         state["error"] = f"Failed to mark day as generated: {str(e)}"
         return state
-

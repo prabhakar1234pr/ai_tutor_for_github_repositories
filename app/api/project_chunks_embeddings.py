@@ -72,7 +72,7 @@ async def get_project_embedding_status(
     Return the current embedding status for a project.
     """
     response = supabase.table("Projects").select(
-        "project_id, status, error_reason, updated_at"
+        "project_id, status, error_message, updated_at"
     ).eq("project_id", str(project_id)).execute()
 
     if not response.data:
@@ -82,7 +82,7 @@ async def get_project_embedding_status(
     return {
         "project_id": project["project_id"],
         "status": project["status"],
-        "error_reason": project.get("error_reason"),
+        "error_message": project.get("error_message"),
         "updated_at": project.get("updated_at"),
     }
 

@@ -259,24 +259,14 @@ async def run_embedding_pipeline(
         else:
             logger.error(f"❌ Embedding pipeline failed for project_id={project_id} after {error_duration:.2f}s: {str(e)}", exc_info=True)
         
-        # Try to update with error_reason, but if column doesn't exist, just update status
+        # Update project status to failed with error message
         try:
-            logger.info(f"📝 Updating project status to 'failed' with error_reason")
-            supabase.table("Projects").update(
-                {
-                    "status": "failed",
-                    "error_reason": str(e),
-                }
-            ).eq("project_id", project_id).execute()
+            logger.info(f"📝 Updating project status to 'failed' with error_message")
+            supabase.table("Projects").update({
+                "status": "failed",
+                "error_message": str(e)[:500],  # Limit error message length
+            }).eq("project_id", project_id).execute()
             logger.info(f"✅ Project status updated to 'failed'")
         except Exception as update_error:
-            logger.warning(f"⚠️  Failed to update with error_reason, trying without it: {update_error}")
-            # If error_reason column doesn't exist, just update status
-            try:
-                supabase.table("Projects").update(
-                    {"status": "failed"}
-                ).eq("project_id", project_id).execute()
-                logger.info(f"✅ Project status updated to 'failed' (without error_reason)")
-            except Exception as final_error:
-                logger.error(f"❌ Failed to update project status: {final_error}")
+            logger.error(f"❌ Failed to update project status: {update_error}")
         raise

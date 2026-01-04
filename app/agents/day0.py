@@ -1,6 +1,7 @@
 """
 Fixed Day 0 content for all projects.
 Day 0 is always the same: GitHub setup and project initialization.
+Content is comprehensive documentation for the full-page docs experience.
 """
 
 from app.agents.state import ConceptData
@@ -16,118 +17,279 @@ DAY_0_CONTENT: list[ConceptData] = [
         "order_index": 1,
         "title": "GitHub Profile Setup",
         "description": "Connect your GitHub account and prepare your development workspace",
-        "subconcepts": [
-            {
-                "order_index": 1,
-                "title": "Why GitHub Matters",
-                "content": """# Why GitHub Matters
+        "estimated_minutes": 25,
+        "content": """# GitHub Profile Setup
 
-GitHub is the world's largest platform for hosting and collaborating on code. It's where developers build software together and showcase their work.
+## Introduction
 
-**Why You Need GitHub:**
-- **Version Control**: Track every change to your code
-- **Collaboration**: Work with other developers
-- **Portfolio**: Show employers your projects
-- **Industry Standard**: Used by millions of developers
+Welcome to your learning journey! Before we dive into coding, we need to set up the foundation that every professional developer uses: **GitHub**.
 
-**Key Insight:**
-Your GitHub profile is your developer resume. Recruiters and hiring managers check GitHub profiles to see real code you've written.
+GitHub is more than just a place to store code—it's the central hub of modern software development. Whether you're building a personal project, contributing to open source, or working at a tech company, you'll be using GitHub daily.
 
-**What Makes a Strong Profile:**
-- Active contributions (green squares!)
-- Well-documented projects
-- Clear README files
-- Consistent commit history
+> 💡 **Why This Matters**: Your GitHub profile is your developer portfolio. Recruiters and hiring managers check GitHub profiles to see real code you've written. A well-maintained profile can open doors to job opportunities.
 
-Think of GitHub as LinkedIn for developers - but instead of listing skills, you prove them with code.
-"""
-            },
-            {
-                "order_index": 2,
-                "title": "Setting Up Your Profile",
-                "content": """# Setting Up Your Profile
+In this section, you'll learn what GitHub is, why it's essential, and how to set up your profile for success.
 
-A professional GitHub profile helps you stand out. Let's optimize yours.
+---
 
-**Essential Profile Elements:**
+## Core Concepts
 
-1. **Profile Photo**: Use a clear, professional photo
-2. **Bio**: Describe yourself in 1-2 sentences
-   - Example: "Full-stack developer learning AI/ML. Building projects in Python and React."
-3. **Location**: Add your city/region
-4. **Links**: Add your portfolio, LinkedIn, or Twitter
+### What is GitHub?
 
-**Pinned Repositories:**
-Pin your best 6 projects to the top of your profile. Choose projects that:
-- Are complete and working
-- Have good README files
-- Show different skills
-- Demonstrate your growth
+**GitHub** is a web-based platform for version control and collaboration. It lets you and others work together on projects from anywhere in the world.
 
-**Profile README (Optional but Impressive):**
-Create a special repository named exactly as your username to add a homepage to your profile.
+At its core, GitHub uses **Git**, a distributed version control system that tracks changes to files. Think of it like a detailed history book for your code—you can see every change ever made, who made it, and when.
 
-**Example**: If your username is `johndoe`, create a repo called `johndoe` with a README.md - this appears on your profile page!
+**Key Features of GitHub:**
+- **Repositories**: Projects that contain all your files and revision history
+- **Commits**: Snapshots of your project at specific points in time
+- **Branches**: Parallel versions of your code for developing features
+- **Pull Requests**: Proposed changes that can be reviewed before merging
+- **Issues**: Bug tracking and feature requests
+- **Actions**: Automated workflows for testing and deployment
 
-**Pro Tip**: Keep your profile updated. Add new projects as you build them.
-"""
-            },
-            {
-                "order_index": 3,
-                "title": "Understanding Repositories",
-                "content": """# Understanding Repositories
+### Why Developers Use GitHub
 
-A repository (or "repo") is a project folder that contains all your code, files, and version history.
+GitHub isn't just popular—it's the industry standard. Here's why:
 
-**What's Inside a Repository:**
-- **Code files**: Your actual program files
-- **README.md**: Project documentation
-- **Commit history**: Every change ever made
-- **.gitignore**: Files to exclude from version control
-- **Branches**: Different versions of your code
+1. **Version Control**: Never lose work. Every change is saved and can be reverted.
+2. **Collaboration**: Work with teams of any size, anywhere in the world.
+3. **Portfolio**: Showcase your projects to potential employers.
+4. **Community**: Access millions of open-source projects to learn from.
+5. **Integration**: Works with almost every development tool.
+
+> 📊 **Fun Fact**: GitHub hosts over 100 million repositories and has more than 83 million developers as of 2023.
+
+---
+
+## How It Works
+
+### The GitHub Workflow
+
+Understanding the basic GitHub workflow is essential:
+
+```
+1. Create Repository → 2. Clone to Local → 3. Make Changes → 4. Commit → 5. Push → 6. Repeat
+```
+
+**Step-by-step breakdown:**
+
+1. **Create a Repository**: Start a new project on GitHub
+2. **Clone**: Download the repository to your computer
+3. **Make Changes**: Edit files, add features, fix bugs
+4. **Stage & Commit**: Save your changes with a descriptive message
+5. **Push**: Upload your commits back to GitHub
+6. **Pull**: Download changes made by others (for team projects)
+
+### Understanding Repositories
+
+A **repository** (or "repo") is like a project folder that contains:
+- All your code files
+- Documentation (README, LICENSE)
+- Configuration files
+- Complete history of every change
 
 **Repository Types:**
 
-**Public Repositories:**
-- Visible to everyone
-- Free on GitHub
-- Great for learning projects and portfolios
-- Open for collaboration
+| Type | Visibility | Best For |
+|------|------------|----------|
+| Public | Everyone | Open source, portfolios |
+| Private | Only you + collaborators | Work projects, unfinished code |
 
-**Private Repositories:**
-- Only you (and invited collaborators) can see
-- Good for work projects or unfinished code
-- Still free on GitHub
+### Understanding Licenses
 
-**Best Practices:**
-- Use clear, descriptive names (e.g., `todo-app` not `project1`)
-- Always include a README file
-- Add a license if you want others to use your code
-- Write meaningful commit messages
+A **license** is a legal document that tells others what they can and cannot do with your code. Without a license, your code is technically "all rights reserved"—meaning no one can legally use, modify, or distribute it.
 
-**For This Learning Project:**
-You'll create a public repository so you can showcase your progress and learning journey.
-"""
-            }
-        ],
+**Why Licenses Matter:**
+- They protect your work legally
+- They clarify how others can use your code
+- They encourage (or restrict) collaboration
+- They're required for professional and open-source projects
+
+**Common License Types:**
+
+| License | Permissions | Restrictions | Best For |
+|---------|-------------|--------------|----------|
+| **MIT** | Use, modify, distribute, commercial use | Must include license text | Simple projects, maximum freedom |
+| **Apache 2.0** | Use, modify, distribute, patent rights | Must include license + state changes | Projects needing patent protection |
+| **GPL v3** | Use, modify, distribute | Derivatives must also be GPL | Ensuring code stays open source |
+| **BSD 3-Clause** | Use, modify, distribute | Cannot use author's name for endorsement | Academic and research projects |
+| **Unlicense** | Anything | None | Public domain dedication |
+
+**How to Choose a License:**
+
+1. **Want maximum freedom?** → Use **MIT** or **BSD**
+   - Anyone can do almost anything with your code
+   - Only requirement: include the original license
+
+2. **Want patent protection?** → Use **Apache 2.0**
+   - Protects against patent claims
+   - Good for larger projects
+
+3. **Want derivatives to stay open source?** → Use **GPL**
+   - "Copyleft" license
+   - Any project using your code must also be GPL
+
+4. **Not sure?** → **MIT is the safest default**
+   - Most permissive and widely understood
+   - Used by React, jQuery, and many major projects
+
+> ⚠️ **Important**: Once you choose a license, it applies to all future users. Changing licenses later can be complicated if others have already used your code.
+
+**Adding a License to Your Repository:**
+
+When creating a new repository on GitHub:
+1. Check "Add a license" during creation
+2. Select your preferred license from the dropdown
+3. GitHub automatically creates a `LICENSE` file
+
+For existing repositories:
+1. Create a new file called `LICENSE` (no extension)
+2. Copy the full license text from [choosealicense.com](https://choosealicense.com)
+3. Commit the file to your repository
+
+---
+
+## Setting Up Your Profile
+
+### Essential Profile Elements
+
+A professional GitHub profile should include:
+
+1. **Profile Photo**: Use a clear, professional photo (or a distinctive avatar)
+2. **Name**: Your real name helps people find and remember you
+3. **Bio**: A brief description (160 characters max)
+4. **Location**: Your city or timezone
+5. **Links**: Portfolio, LinkedIn, or personal website
+
+**Example Bio:**
+```
+Full-stack developer passionate about React and Python. Building tools that make developers' lives easier. Open to opportunities!
+```
+
+### Pinned Repositories
+
+You can pin up to 6 repositories to the top of your profile. Choose projects that:
+- ✅ Are complete and functional
+- ✅ Have clear README files
+- ✅ Demonstrate your best skills
+- ✅ Show variety in your abilities
+
+> 💡 **Pro Tip**: Pin a mix of project types—maybe a web app, a CLI tool, and a contribution to an open-source project.
+
+### Profile README (Advanced)
+
+You can create a special repository with the same name as your username to add a README that appears on your profile page.
+
+**Example**: If your username is `johndoe`, create a repo called `johndoe` with a `README.md`. This markdown file becomes your profile homepage!
+
+---
+
+## Common Patterns
+
+### Good Repository Practices
+
+Every repository should have:
+
+1. **README.md**: Explains what the project does and how to use it
+2. **.gitignore**: Lists files Git should ignore (like `node_modules/`)
+3. **LICENSE**: Tells others how they can use your code
+4. **Clear commit messages**: Describe what each change does
+
+**Good commit message examples:**
+```
+✅ "Add user authentication with JWT tokens"
+✅ "Fix navbar not displaying on mobile devices"
+✅ "Update README with installation instructions"
+
+❌ "fix stuff"
+❌ "asdfasdf"
+❌ "changes"
+```
+
+### Contribution Graph
+
+Your GitHub profile shows a contribution graph—a calendar of green squares representing your activity. Each square represents a day, and the color intensity shows how many contributions you made.
+
+**What counts as a contribution:**
+- Commits to a repository's default branch
+- Opening issues or pull requests
+- Reviewing pull requests
+- Creating repositories
+
+> 🎯 **Goal**: Consistent activity (even small commits) looks better than sporadic bursts.
+
+---
+
+## Common Mistakes
+
+### Mistake 1: Empty or Unclear README
+
+A repository without a README is like a book without a cover. Always include:
+- What the project does
+- How to install/run it
+- How to use it
+- (Optional) Screenshots or demos
+
+### Mistake 2: Committing Sensitive Data
+
+**Never commit:**
+- Passwords or API keys
+- `.env` files with secrets
+- Private configuration files
+
+Use a `.gitignore` file and environment variables instead.
+
+### Mistake 3: Inconsistent Activity
+
+Having months of inactivity followed by sudden bursts looks unprofessional. Try to:
+- Work on projects regularly
+- Make small, frequent commits
+- Keep learning and building
+
+---
+
+## Summary
+
+You now understand:
+
+- **GitHub** is the central hub for code collaboration and version control
+- **Repositories** are project containers with full history tracking
+- **Your profile** is your developer portfolio—keep it professional
+- **Good practices** include clear READMEs, meaningful commits, and consistent activity
+
+**Key Actions:**
+- ✅ Set up your profile with photo, bio, and links
+- ✅ Understand the commit → push workflow
+- ✅ Know what makes a professional repository
+- ✅ Avoid common mistakes like committing secrets
+
+**Next Steps:** Complete the tasks below to verify your GitHub setup and create your first repository for this learning journey!
+""",
         "tasks": [
             {
                 "order_index": 1,
                 "title": "Verify Your GitHub Profile",
-                "description": "Paste your GitHub profile URL (example: https://github.com/yourusername) so we can verify your account and track your learning progress. Make sure your profile is set up with at least a username and photo.",
-                "task_type": "github_profile"
+                "description": "Paste your GitHub profile URL (example: https://github.com/yourusername) to verify your account. Before submitting, make sure your profile has: 1) A profile photo or avatar, 2) Your name filled in, 3) A short bio describing yourself as a developer. We'll verify your profile is set up correctly.",
+                "task_type": "github_profile",
+                "estimated_minutes": 5,
+                "difficulty": "easy"
             },
             {
                 "order_index": 2,
                 "title": "Create Your Project Repository",
-                "description": "Create a new public repository on GitHub for this learning project. Name it something descriptive related to what you're building (e.g., 'learning-python-basics' or 'my-first-webapp'). Initialize it with a README file. Copy and paste the repository URL when done.",
-                "task_type": "create_repo"
+                "description": "Create a new PUBLIC repository on GitHub for this learning project. Requirements: 1) Name it something descriptive (e.g., 'learning-python-api' or 'my-first-webapp'), 2) Check 'Add a README file' when creating, 3) Choose a license (MIT is a good default). After creating, paste the repository URL (example: https://github.com/username/repo-name).",
+                "task_type": "create_repo",
+                "estimated_minutes": 5,
+                "difficulty": "easy"
             },
             {
                 "order_index": 3,
                 "title": "Make Your First Commit",
-                "description": "Initialize your local repository, connect it to GitHub, and make your first commit. This verifies your GitHub connection is working. You can either: (1) Edit the README directly on GitHub and commit, or (2) Clone the repo locally, make a change, and push. Paste your commit URL to verify (example: https://github.com/username/repo/commit/abc123).",
-                "task_type": "verify_commit"
+                "description": "Edit your repository's README.md file to personalize it. Add: 1) A project title, 2) A brief description of what you'll be learning, 3) Your name as the author. You can edit directly on GitHub (click the pencil icon) or clone locally and push. After committing, paste the commit URL (example: https://github.com/username/repo/commit/abc123).",
+                "task_type": "verify_commit",
+                "estimated_minutes": 10,
+                "difficulty": "easy"
             }
         ]
     }

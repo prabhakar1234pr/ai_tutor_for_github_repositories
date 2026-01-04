@@ -37,10 +37,7 @@ Focus on:
 - Return ONLY the JSON object
 - NO markdown code blocks (no ```json or ```)
 - NO explanatory text before or after
-- NO comments
 - Start with {{ and end with }}
-- Example of correct response:
-{{"summary": "...", "primary_language": "...", "frameworks": [...], "architecture_patterns": [...], "difficulty": "..."}}
 """
 
 # ===== CURRICULUM PLANNING PROMPT =====
@@ -61,28 +58,16 @@ Create a {target_days}-day learning plan where each day has a focused theme.
 - Day 0 is ALWAYS "Project Setup & GitHub Connection" (already provided, skip in your output)
 - Days 1 to {last_day_number} should progress logically from basics to advanced
 - Each day should build on previous days
-- Each day's theme must be clearly distinct from previous days (no repetition or rewording)
+- Each day's theme must be clearly distinct from previous days
 - Match the {skill_level} skill level
 - Each day should take 2-4 hours to complete
-
-**Example Progression for a Web App:**
-- Day 1: HTML/CSS Basics & Project Structure
-- Day 2: JavaScript Fundamentals & DOM Manipulation
-- Day 3: Event Handling & User Interactions
-- Day 4: API Integration & Async JavaScript
-- ... and so on (each day clearly different)
 
 **Return ONLY valid JSON array starting from day 1:**
 [
   {{
     "day_number": 1,
     "theme": "Short descriptive theme (5-8 words)",
-    "description": "1-2 sentences explaining what the student will learn and build this day"
-  }},
-  {{
-    "day_number": 2,
-    "theme": "...",
-    "description": "..."
+    "description": "1-2 sentences explaining what the student will learn"
   }},
   ...
   {{
@@ -93,10 +78,9 @@ Create a {target_days}-day learning plan where each day has a focused theme.
 ]
 
 **CRITICAL:** 
-- Return ONLY the JSON array, no markdown formatting, no extra text
+- Return ONLY the JSON array, no markdown formatting
 - Start from day 1 (Day 0 is handled separately)
 - Include exactly {last_day_number} days
-- Each theme must be unique and clearly distinct
 """
 
 # ===== CONCEPTS GENERATION PROMPT =====
@@ -112,32 +96,20 @@ CONCEPTS_GENERATION_PROMPT = """You are designing the learning concepts for a sp
 {repo_summary}
 
 **Your Task:**
-Generate 3-5 major learning concepts for this day. Each concept is a big topic the student will learn.
+Generate 3-5 major learning concepts for this day.
 
 **Guidelines:**
-- Each concept should be a substantial topic (e.g., "Variables and Data Types", "Functions and Scope", "API Integration")
-- Concepts must directly support the day's theme and be necessary to understand or build the project
-- Concepts should take 30-60 minutes each to complete
-- They should build toward understanding the project
-- Order them from foundational to advanced within the day
+- Each concept should be a substantial topic worth 20-40 minutes of reading
+- Concepts should take 30-60 minutes total (reading + tasks)
+- Order them from foundational to advanced
 - Keep titles clear and concise (3-6 words)
-
-**Example concepts for "Day 1: Python Basics":**
-1. "Variables and Data Types" - Understanding how to store data
-2. "Control Flow and Conditionals" - Making decisions in code
-3. "Lists and Loops" - Working with collections
 
 **Return ONLY valid JSON array:**
 [
   {{
     "order_index": 1,
     "title": "Concept Title (3-6 words)",
-    "description": "Brief 1-sentence description of what student will learn"
-  }},
-  {{
-    "order_index": 2,
-    "title": "...",
-    "description": "..."
+    "description": "Brief 1-sentence description"
   }},
   ...
 ]
@@ -145,12 +117,10 @@ Generate 3-5 major learning concepts for this day. Each concept is a big topic t
 **CRITICAL:** 
 - Return ONLY the JSON array, no markdown formatting
 - Include 3-5 concepts
-- Keep descriptions concise (one sentence)
-- Concepts must be relevant to the day's theme
 """
 
-# ===== SUBCONCEPTS GENERATION PROMPT =====
-SUBCONCEPTS_GENERATION_PROMPT = """You are creating educational content for a specific learning concept.
+# ===== CONTENT GENERATION PROMPT =====
+CONTENT_GENERATION_PROMPT = """You are a technical writer creating comprehensive documentation for a learning platform.
 
 **Context:**
 - Day Number: {day_number}
@@ -159,91 +129,120 @@ SUBCONCEPTS_GENERATION_PROMPT = """You are creating educational content for a sp
 - Skill Level: {skill_level}
 
 **Your Task:**
-Generate 2-4 subconcepts with detailed markdown content. Each subconcept explains a specific aspect of the main concept.
+Create detailed, professional documentation that teaches this concept thoroughly. This will be displayed as a full-page reading experience, so make it comprehensive and engaging.
 
-**Guidelines:**
-- Each subconcept should cover one specific sub-topic
-- Content should be educational, clear, and example-rich
-- Use markdown formatting (headers, code blocks, lists, bold)
-- Include code examples where relevant
-- Keep each subconcept 150-300 words
-- Write for {skill_level} level
+**CONTENT REQUIREMENTS:**
 
-**Example for concept "Variables and Data Types":**
-1. "What are Variables?" - Explain variables as containers
-2. "Common Data Types" - Strings, numbers, booleans with examples
-3. "Variable Naming Rules" - Best practices and conventions
+1. **Length**: 1500-2500 words (this is a full documentation page, not a summary)
 
-**Content Format Example:**
-```markdown
-# What are Variables?
+2. **Structure** - Use clear markdown sections:
+   - `# Title` - Main concept title
+   - `## Introduction` - What is this, why it matters (2-3 paragraphs)
+   - `## Core Concepts` - The fundamental ideas with explanations
+   - `## How It Works` - Technical details and mechanics
+   - `## Code Examples` - Multiple practical examples with explanations
+   - `## Common Patterns` - Best practices and patterns
+   - `## Common Mistakes` - What to avoid (with examples)
+   - `## Summary` - Key takeaways as bullet points
 
-Variables are containers that store data values. Think of them as labeled boxes where you can put information and retrieve it later.
+3. **Code Examples** - Include 3-5 code blocks:
+   - Each code block should have context explaining what it does
+   - Show both "good" and "bad" examples where relevant
+   - Use realistic, practical examples
+   - Add comments inside code to explain key lines
 
-**Key Points:**
-- Variables have names and values
-- You can change a variable's value
-- Use descriptive names for clarity
+4. **Formatting** - Use rich markdown:
+   - **Bold** for important terms when first introduced
+   - `inline code` for function names, variables, commands (use ONLY single backticks like `name`, NEVER multiple backticks)
+   - > Blockquotes for tips, warnings, or important notes
+   - Bullet lists for steps or feature lists
+   - Numbered lists for sequential processes
 
-**Example:**
+**CRITICAL INLINE CODE FORMATTING:**
+- For inline code, use EXACTLY ONE backtick on each side: `example`
+- NEVER use multiple backticks like ``example`` or ```example```
+- Multiple backticks are ONLY for code blocks (on their own line with language specifier)
+
+5. **Writing Style**:
+   - Write like MDN Web Docs or official documentation
+   - Be clear and precise, avoid fluff
+   - Explain the "why" not just the "how"
+   - Use analogies for complex concepts ({skill_level} level)
+   - Include practical real-world applications
+
+**SKILL LEVEL ADAPTATION ({skill_level}):**
+- beginner: Explain everything, assume no prior knowledge, use simple analogies
+- intermediate: Assume basic knowledge, focus on deeper understanding and patterns
+- advanced: Focus on edge cases, performance, advanced patterns, less hand-holding
+
+**Example Structure:**
+
+```
+# Variables and Data Types
+
+## Introduction
+
+Variables are fundamental building blocks in programming...
+
+> 💡 **Key Insight**: Think of variables as labeled containers...
+
+## Core Concepts
+
+### What is a Variable?
+
+A **variable** is a named storage location...
+
+### Data Types
+
+Python has several built-in data types:
+- **Strings** - Text data like `"Hello"`
+- **Integers** - Whole numbers like `42`
+...
+
+## Code Examples
+
+### Basic Variable Declaration
+
 ```python
+# Declaring variables
 name = "Alice"
 age = 25
 is_student = True
 ```
 
-In this example, we store a person's information in three variables.
+In this example, we create three variables...
+
+## Common Mistakes
+
+### Mistake 1: Using undeclared variables
+...
+
+## Summary
+
+- Variables store data with meaningful names
+- Python has dynamic typing
+...
 ```
 
-**Return ONLY valid JSON array:**
-[
-  {{
-    "order_index": 1,
-    "title": "Subconcept Title (3-5 words)",
-    "content": "# Title\\n\\nFull markdown content here with examples..."
-  }},
-  {{
-    "order_index": 2,
-    "title": "...",
-    "content": "..."
-  }},
-  ...
-]
+**Return ONLY valid JSON object:**
+{{
+  "content": "# Full markdown content here with all sections...\\n\\n## Introduction\\n\\n...",
+  "estimated_minutes": 20
+}}
 
-**CRITICAL JSON FORMATTING RULES:**
-1. Return ONLY a JSON array - NO markdown code blocks, NO explanatory text
-2. Start with [ and end with ]
-3. Escape ALL special characters in strings:
-   - Newlines: use \\n (double backslash + n)
-   - Quotes: use \\" (double backslash + quote)
-   - Backslashes: use \\\\ (four backslashes)
-4. Do NOT include markdown code blocks (```) anywhere in the JSON
-5. Do NOT include code examples as separate blocks - embed them in the content string
-6. All strings must use double quotes
-7. Content field should contain markdown as a properly escaped JSON string
-
-**VALIDATION CHECKLIST:**
-- [ ] Response starts with [ and ends with ]
-- [ ] All strings use double quotes
-- [ ] All newlines escaped as \\n
-- [ ] All quotes escaped as \\"
-- [ ] No markdown code blocks (```) anywhere
-- [ ] Valid JSON that passes json.loads() validation
-
-**Example of CORRECT format:**
-[
-  {{
-    "order_index": 1,
-    "title": "What are Variables?",
-    "content": "# What are Variables?\\n\\nVariables are containers.\\n\\n**Example:**\\n\\n```python\\nname = \\\"Alice\\\"\\n```"
-  }}
-]
-
-**Your response MUST be valid JSON that can be parsed directly.**
+**CRITICAL JSON FORMATTING:**
+- Return ONLY a JSON object, no text before or after
+- Escape ALL newlines as \\n
+- Escape ALL quotes inside strings as \\"
+- Escape backslashes as \\\\
+- Code blocks: use \\n```python\\ncode here\\n```\\n
+- estimated_minutes should be 15-30 based on content length
+- Content must be valid JSON string (test with JSON.parse)
+- INLINE CODE: Use SINGLE backticks only (`word`), never multiple backticks for inline code
 """
 
 # ===== TASKS GENERATION PROMPT =====
-TASKS_GENERATION_PROMPT = """You are creating coding tasks for students to practice what they learned.
+TASKS_GENERATION_PROMPT = """You are creating hands-on coding tasks for a learning platform.
 
 **Context:**
 - Day Number: {day_number}
@@ -252,65 +251,76 @@ TASKS_GENERATION_PROMPT = """You are creating coding tasks for students to pract
 - Skill Level: {skill_level}
 
 **Your Task:**
-Generate 3-5 hands-on coding tasks that let students apply this concept.
+Generate 2-4 practical coding tasks that let students apply what they learned.
 
-**Guidelines:**
-- Each task should be specific and actionable
-- Tasks should increase in difficulty
-- Provide clear instructions on what to code
-- Tasks should build toward the final project
-- Match the {skill_level} level
-- All tasks should have task_type: "coding" (unless it's Day 0)
+**TASK REQUIREMENTS:**
 
-**Example tasks for "Variables and Data Types":**
-1. "Create variables for user profile" - Store name, age, email in variables
-2. "Calculate and store results" - Use variables for math operations
-3. "Variable reassignment practice" - Update variable values and print results
+1. **Progressive Difficulty**: 
+   - First task: "easy" - Basic application of the concept
+   - Middle tasks: "medium" - Combining concepts or adding complexity
+   - Last task: "hard" (optional) - Challenge task for advanced learners
+
+2. **Clear Instructions**: Each task description should include:
+   - What to build/create
+   - Specific requirements (inputs, outputs, features)
+   - Expected behavior or result
+   - Any constraints or guidelines
+
+3. **Practical & Realistic**: 
+   - Tasks should build toward real project features
+   - Use realistic scenarios (not abstract puzzles)
+   - Connect to the project they're learning to build
+
+4. **Time Estimates**:
+   - easy: 10-15 minutes
+   - medium: 15-25 minutes  
+   - hard: 25-40 minutes
+
+**SKILL LEVEL ADAPTATION ({skill_level}):**
+- beginner: More guidance, simpler requirements, focus on one concept at a time
+- intermediate: Less hand-holding, combine multiple concepts, expect problem-solving
+- advanced: Minimal guidance, complex requirements, edge cases, optimization
+
+**Example Tasks:**
+
+```json
+[
+  {{
+    "order_index": 1,
+    "title": "Create User Variables",
+    "description": "Create a Python file called user_profile.py. Define variables to store: user's name (string), age (integer), email (string), and is_premium_member (boolean). Print each variable with a descriptive label. Example output: 'Name: Alice'",
+    "task_type": "coding",
+    "estimated_minutes": 10,
+    "difficulty": "easy"
+  }},
+  {{
+    "order_index": 2,
+    "title": "Build a User Summary Function",
+    "description": "Create a function called get_user_summary() that takes name, age, and is_premium as parameters. Return a formatted string like: 'Alice (25) - Premium Member' or 'Bob (30) - Free User'. Handle edge cases: empty name should return 'Anonymous'.",
+    "task_type": "coding",
+    "estimated_minutes": 20,
+    "difficulty": "medium"
+  }}
+]
+```
 
 **Return ONLY valid JSON array:**
 [
   {{
     "order_index": 1,
     "title": "Short task title (4-6 words)",
-    "description": "Clear instructions: What to create, what functionality to implement, what the output should be. Be specific about requirements.",
-    "task_type": "coding"
-  }},
-  {{
-    "order_index": 2,
-    "title": "...",
-    "description": "...",
-    "task_type": "coding"
+    "description": "Detailed instructions: what to create, requirements, expected behavior, constraints. Be specific!",
+    "task_type": "coding",
+    "estimated_minutes": 15,
+    "difficulty": "easy"
   }},
   ...
 ]
 
-**CRITICAL JSON FORMATTING RULES:**
-1. Return ONLY a JSON array - NO markdown code blocks, NO explanatory text
-2. Start with [ and end with ]
-3. Escape ALL special characters in strings:
-   - Newlines: use \\n (double backslash + n)
-   - Quotes: use \\" (double backslash + quote)
-   - Backslashes: use \\\\ (four backslashes)
-4. All strings must use double quotes
-5. task_type must be exactly "coding" (lowercase, in quotes)
-
-**VALIDATION CHECKLIST:**
-- [ ] Response starts with [ and ends with ]
-- [ ] All strings use double quotes
-- [ ] All newlines escaped as \\n
-- [ ] All quotes escaped as \\"
-- [ ] task_type field present and equals "coding"
-- [ ] Valid JSON that passes json.loads() validation
-
-**Example of CORRECT format:**
-[
-  {{
-    "order_index": 1,
-    "title": "Create Variables",
-    "description": "Create three variables: name, age, and email. Print them.",
-    "task_type": "coding"
-  }}
-]
-
-**Your response MUST be valid JSON that can be parsed directly.**
+**CRITICAL JSON FORMATTING:**
+- Return ONLY a JSON array, no text before or after
+- task_type must be "coding"
+- difficulty must be "easy", "medium", or "hard"
+- estimated_minutes: 10-40 based on difficulty
+- Escape quotes and special characters properly
 """

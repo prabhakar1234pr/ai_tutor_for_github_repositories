@@ -8,7 +8,6 @@ from app.agents.state import (
     RepoAnalysis,
     DayTheme,
     ConceptData,
-    SubConceptData,
     TaskData,
 )
 from app.agents.roadmap_agent import (
@@ -23,7 +22,6 @@ __all__ = [
     "RepoAnalysis",
     "DayTheme",
     "ConceptData",
-    "SubConceptData",
     "TaskData",
     # Main agent
     "get_roadmap_graph",

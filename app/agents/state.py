@@ -7,11 +7,11 @@ from typing import TypedDict, List, Optional, Literal, Dict
 
 class RepoAnalysis(TypedDict):
     """Structured analysis of the GitHub repository"""
-    summary: str                      # High-level overview of the project
-    primary_language: str             # Main programming language
-    frameworks: List[str]             # Frameworks/libraries used
-    architecture_patterns: List[str]  # MVC, REST API, Microservices, Layered, etc
-    difficulty: str                   # Overall complexity assessment
+    summary: str
+    primary_language: str
+    frameworks: List[str]
+    architecture_patterns: List[str]
+    difficulty: str
 
 class DayTheme(TypedDict):
     """Theme for a single day in the curriculum"""
@@ -19,34 +19,30 @@ class DayTheme(TypedDict):
     theme: str
     description: str
 
-class SubConceptData(TypedDict):
-    """A single subconcept with markdown content"""
-    order_index: int
-    title: str
-    content: str  # Markdown formatted learning content
-
 class TaskData(TypedDict):
     """A single task for users to complete"""
     order_index: int
     title: str
     description: str
-    # Matches database constraint exactly
     task_type: Literal[
-        "coding",           # Write code (primary type)
-        "reading",          # Read documentation
-        "research",         # Research a topic
-        "quiz",             # Answer questions
-        "github_profile",   # Day 0: Paste GitHub profile
-        "create_repo",      # Day 0: Create repository
-        "verify_commit"     # Day 0: Make first commit
+        "coding",
+        "reading",
+        "research",
+        "quiz",
+        "github_profile",
+        "create_repo",
+        "verify_commit"
     ]
+    estimated_minutes: int
+    difficulty: Literal["easy", "medium", "hard"]
 
 class ConceptData(TypedDict):
-    """A major learning concept with subconcepts and tasks"""
+    """A major learning concept with content and tasks"""
     order_index: int
     title: str
     description: str
-    subconcepts: List[SubConceptData]
+    content: str  # Rich markdown documentation
+    estimated_minutes: int
     tasks: List[TaskData]
 
 class RoadmapAgentState(TypedDict):
@@ -55,27 +51,27 @@ class RoadmapAgentState(TypedDict):
     This state is passed between all LangGraph nodes.
     """
     # ===== INPUT (Immutable) =====
-    project_id: str           # UUID of the project
-    github_url: str           # GitHub repo URL
-    skill_level: str          # beginner/intermediate/advanced
-    target_days: int          # How many days of learning (e.g., 14)
+    project_id: str
+    github_url: str
+    skill_level: str
+    target_days: int
     
     # ===== ANALYSIS RESULTS =====
-    repo_analysis: Optional[RepoAnalysis]  # Structured repo analysis from RAG
+    repo_analysis: Optional[RepoAnalysis]
     
     # ===== CURRICULUM (Generated once upfront) =====
-    curriculum: List[DayTheme]    # All day themes generated at start
+    curriculum: List[DayTheme]
     
     # ===== CURRENT GENERATION CONTEXT =====
-    current_day_number: int       # Which day we're generating (0, 1, 2...)
-    current_day_id: Optional[str] # UUID of current day in database
-    current_concepts: List[ConceptData]  # Concepts being generated
-    current_concept_index: int    # Which concept we're on
+    current_day_number: int
+    current_day_id: Optional[str]
+    current_concepts: List[ConceptData]
+    current_concept_index: int
     
     # ===== INTERNAL STATE (Database IDs) =====
-    day_ids_map: Optional[Dict[int, str]]  # Mapping day_number -> day_id
-    concept_ids_map: Optional[Dict[int, str]]  # Mapping concept order_index -> concept_id
+    day_ids_map: Optional[Dict[int, str]]
+    concept_ids_map: Optional[Dict[int, str]]
     
     # ===== STATUS TRACKING =====
-    is_complete: bool             # Is entire roadmap done?
-    error: Optional[str]          # Error message if something failed
+    is_complete: bool
+    error: Optional[str]

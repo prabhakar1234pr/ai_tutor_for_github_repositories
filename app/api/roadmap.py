@@ -1,5 +1,6 @@
 """
 API routes for roadmap content (read-only for users).
+Returns days, concepts (with content), and tasks.
 """
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -19,7 +20,7 @@ async def get_roadmap(
     supabase: Client = Depends(get_supabase_client)
 ):
     """
-    Get all days for a project with their status.
+    Get all days for a project with their status and estimated times.
     """
     try:
         clerk_user_id = user_info["clerk_user_id"]
@@ -36,7 +37,7 @@ async def get_roadmap(
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
         
-        # Get all days
+        # Get all days with all fields including estimated_minutes
         days_response = supabase.table("roadmap_days").select("*").eq("project_id", project_id).order("day_number", desc=False).execute()
         
         return {
@@ -59,7 +60,7 @@ async def get_day_details(
     supabase: Client = Depends(get_supabase_client)
 ):
     """
-    Get day details with all concepts (for Kanban board).
+    Get day details with all concepts (including content and estimated_minutes).
     """
     try:
         clerk_user_id = user_info["clerk_user_id"]
@@ -83,7 +84,7 @@ async def get_day_details(
         
         day = day_response.data[0]
         
-        # Get concepts for this day
+        # Get concepts for this day (including content and estimated_minutes)
         concepts_response = supabase.table("concepts").select("*").eq("day_id", day_id).order("order_index", desc=False).execute()
         concepts = concepts_response.data if concepts_response.data else []
         
@@ -108,7 +109,9 @@ async def get_concept_details(
     supabase: Client = Depends(get_supabase_client)
 ):
     """
-    Get concept details with subconcepts and tasks.
+    Get concept details with content and tasks.
+    Content is rich markdown documentation.
+    Tasks include difficulty, hints, and estimated time.
     """
     try:
         clerk_user_id = user_info["clerk_user_id"]
@@ -125,25 +128,20 @@ async def get_concept_details(
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
         
-        # Get concept
+        # Get concept (includes content and estimated_minutes)
         concept_response = supabase.table("concepts").select("*").eq("concept_id", concept_id).execute()
         if not concept_response.data:
             raise HTTPException(status_code=404, detail="Concept not found")
         
         concept = concept_response.data[0]
         
-        # Get subconcepts
-        subconcepts_response = supabase.table("sub_concepts").select("*").eq("concept_id", concept_id).order("order_index", desc=False).execute()
-        subconcepts = subconcepts_response.data if subconcepts_response.data else []
-        
-        # Get tasks
+        # Get tasks (includes difficulty, hints, solution, estimated_minutes)
         tasks_response = supabase.table("tasks").select("*").eq("concept_id", concept_id).order("order_index", desc=False).execute()
         tasks = tasks_response.data if tasks_response.data else []
         
         return {
             "success": True,
             "concept": concept,
-            "subconcepts": subconcepts,
             "tasks": tasks
         }
         
@@ -161,7 +159,7 @@ async def get_generation_status(
     supabase: Client = Depends(get_supabase_client)
 ):
     """
-    Get overall roadmap generation status.
+    Get overall roadmap generation status with progress percentage.
     """
     try:
         clerk_user_id = user_info["clerk_user_id"]
@@ -173,13 +171,17 @@ async def get_generation_status(
         
         user_id = user_response.data[0]["id"]
         
-        # Verify project belongs to user
-        project_response = supabase.table("Projects").select("project_id, target_days").eq("project_id", project_id).eq("user_id", user_id).execute()
+        # Verify project belongs to user and get generation_progress
+        project_response = supabase.table("Projects").select(
+            "project_id, target_days, generation_progress, error_message"
+        ).eq("project_id", project_id).eq("user_id", user_id).execute()
         if not project_response.data:
             raise HTTPException(status_code=404, detail="Project not found")
         
         project = project_response.data[0]
         target_days = project["target_days"]
+        generation_progress = project.get("generation_progress", 0)
+        error_message = project.get("error_message")
         
         # Count days by status
         days_response = supabase.table("roadmap_days").select("generated_status").eq("project_id", project_id).execute()
@@ -205,6 +207,8 @@ async def get_generation_status(
             "total_days": total_days,
             "target_days": target_days,
             "generated_days": generated_days,
+            "generation_progress": generation_progress,
+            "error_message": error_message,
             "status_counts": status_counts,
             "is_complete": is_complete,
             "is_generating": status_counts["generating"] > 0,
@@ -224,7 +228,8 @@ async def get_task_details(
     supabase: Client = Depends(get_supabase_client)
 ):
     """
-    Get task details with related concept and project information.
+    Get task details with related concept, day, and project information.
+    Includes task difficulty, hints, solution, and estimated time.
     """
     try:
         clerk_user_id = user_info["clerk_user_id"]
@@ -236,7 +241,7 @@ async def get_task_details(
         
         user_id = user_response.data[0]["id"]
         
-        # Get task
+        # Get task (includes all new fields)
         task_response = supabase.table("tasks").select("*").eq("task_id", task_id).execute()
         if not task_response.data:
             raise HTTPException(status_code=404, detail="Task not found")

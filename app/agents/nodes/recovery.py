@@ -1,5 +1,5 @@
 """
-Recovery node to retry concepts with empty subconcepts or tasks.
+Recovery node to retry concepts with empty content or tasks.
 Runs after all days are generated to fill in any missing content.
 """
 
@@ -7,7 +7,7 @@ import logging
 import asyncio
 from app.agents.state import RoadmapAgentState
 from app.core.supabase_client import get_supabase_client
-from app.agents.nodes.generate_content import generate_subconcepts_and_tasks
+from app.agents.nodes.generate_content import generate_content_and_tasks
 from app.agents.nodes.save_to_db import save_concept_content
 
 logger = logging.getLogger(__name__)
@@ -15,18 +15,12 @@ logger = logging.getLogger(__name__)
 
 async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Find and retry concepts that have empty subconcepts or tasks.
+    Find and retry concepts that have empty content or tasks.
     
     This node:
-    1. Queries database for concepts with empty subconcepts or tasks
+    1. Queries database for concepts with empty content or tasks
     2. Retries generating content for each failed concept
     3. Updates the database with new content
-    
-    Args:
-        state: Current agent state
-        
-    Returns:
-        Updated state
     """
     project_id = state["project_id"]
     
@@ -50,14 +44,14 @@ async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState
         day_ids = [day["day_id"] for day in days_response.data]
         day_map = {day["day_id"]: day["day_number"] for day in days_response.data}
         
-        # Find concepts with empty subconcepts or tasks
+        # Find concepts with empty content or tasks
         concepts_to_recover = []
         
         for day_id in day_ids:
             # Get concepts for this day
             concepts_response = (
                 supabase.table("concepts")
-                .select("concept_id, title, description, order_index")
+                .select("concept_id, title, description, order_index, content")
                 .eq("day_id", day_id)
                 .execute()
             )
@@ -65,15 +59,7 @@ async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState
             for concept_data in concepts_response.data:
                 concept_id = concept_data["concept_id"]
                 concept_title = concept_data["title"]
-                
-                # Check subconcepts count
-                subconcepts_response = (
-                    supabase.table("sub_concepts")
-                    .select("subconcept_id")
-                    .eq("concept_id", concept_id)
-                    .execute()
-                )
-                subconcept_count = len(subconcepts_response.data or [])
+                content = concept_data.get("content") or ""
                 
                 # Check tasks count
                 tasks_response = (
@@ -84,8 +70,8 @@ async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState
                 )
                 task_count = len(tasks_response.data or [])
                 
-                # If both are empty or very few, mark for recovery
-                if subconcept_count == 0 or task_count == 0:
+                # If content is empty or no tasks, mark for recovery
+                if not content.strip() or task_count == 0:
                     concepts_to_recover.append({
                         "concept_id": concept_id,
                         "title": concept_title,
@@ -93,12 +79,12 @@ async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState
                         "order_index": concept_data["order_index"],
                         "day_id": day_id,
                         "day_number": day_map[day_id],
-                        "subconcept_count": subconcept_count,
+                        "has_content": bool(content.strip()),
                         "task_count": task_count,
                     })
                     logger.info(
                         f"   Found concept needing recovery: '{concept_title}' "
-                        f"(Day {day_map[day_id]}, subconcepts: {subconcept_count}, tasks: {task_count})"
+                        f"(Day {day_map[day_id]}, has_content: {bool(content.strip())}, tasks: {task_count})"
                     )
         
         if not concepts_to_recover:
@@ -122,7 +108,8 @@ async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState
                     "order_index": concept_info["order_index"],
                     "title": concept_title,
                     "description": concept_info.get("description", ""),
-                    "subconcepts": [],
+                    "content": "",
+                    "estimated_minutes": 15,
                     "tasks": [],
                 }
                 
@@ -135,20 +122,19 @@ async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState
                 # Store concept_id mapping for save_concept_content
                 state["concept_ids_map"] = {concept_info["order_index"]: concept_id}
                 
-                # Generate content (with rate limiting and delays)
-                await generate_subconcepts_and_tasks(state)
+                # Generate content
+                await generate_content_and_tasks(state)
                 
-                # Save the generated content (sync function, don't await)
+                # Save the generated content
                 save_concept_content(state)
                 
                 logger.info(f"✅ Successfully recovered concept: '{concept_title}'")
                 
                 # Add delay between concepts to avoid rate limits
-                await asyncio.sleep(3)  # 3 seconds between recovery attempts
+                await asyncio.sleep(3)
                 
             except Exception as e:
                 logger.error(f"❌ Failed to recover concept '{concept_title}': {e}", exc_info=True)
-                # Continue with next concept
                 continue
         
         logger.info(f"✅ Recovery phase completed: {len(concepts_to_recover)} concepts processed")
@@ -157,6 +143,4 @@ async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState
         
     except Exception as e:
         logger.error(f"❌ Recovery phase failed: {e}", exc_info=True)
-        # Don't fail the entire workflow - recovery is optional
         return state
-
