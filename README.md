@@ -2,6 +2,8 @@
 
 Backend API service that transforms GitHub repositories into personalized learning roadmaps using AI-powered analysis and RAG (Retrieval-Augmented Generation).
 
+**🎯 Phase 0 Complete** - Docker-backed workspaces with real file system operations.
+
 ## Project Structure
 
 ```
@@ -16,6 +18,8 @@ app/
 │   ├── chatbot.py         # Chatbot RAG endpoints
 │   ├── roadmap.py         # Roadmap generation endpoints
 │   ├── progress.py        # Learning progress tracking
+│   ├── workspaces.py      # 🆕 Workspace lifecycle endpoints
+│   ├── files.py           # 🆕 File system operations endpoints
 │   └── project_chunks_embeddings.py  # Chunk/embedding management
 │
 ├── agents/                # LangGraph agent workflows
@@ -37,11 +41,17 @@ app/
 │   ├── qdrant_service.py          # Vector database operations
 │   ├── rag_pipeline.py            # RAG query processing
 │   ├── roadmap_generation.py      # Roadmap orchestration
-│   └── chunk_storage.py           # Chunk storage in Supabase
+│   ├── chunk_storage.py           # Chunk storage in Supabase
+│   ├── docker_client.py           # 🆕 Docker SDK wrapper (thread-safe)
+│   ├── workspace_manager.py       # 🆕 Workspace lifecycle management
+│   └── file_system.py             # 🆕 Container file operations
 │
 ├── core/                  # Core infrastructure clients
 │   ├── supabase_client.py # Supabase database client
 │   └── qdrant_client.py   # Qdrant vector DB client
+│
+├── docker/                # 🆕 Docker configuration
+│   └── Dockerfile.workspace  # Base image for user workspaces
 │
 └── utils/                 # Utility functions
     ├── clerk_auth.py      # Clerk authentication helpers
@@ -66,6 +76,8 @@ app/
    - Text chunking and embedding generation
    - Vector search via Qdrant
    - RAG response generation using Groq/Azure OpenAI
+   - **🆕 Docker container management for workspaces**
+   - **🆕 File system operations inside containers**
 
 3. **Agent Layer** (`app/agents/`): LangGraph workflows
    - Roadmap generation agent orchestrates multi-step content creation
@@ -73,7 +85,7 @@ app/
    - Nodes execute specific tasks (analyze, generate, save)
 
 4. **Data Layer** (`app/core/`): Database clients
-   - Supabase: Relational data (projects, users, roadmaps, chunks)
+   - Supabase: Relational data (projects, users, roadmaps, chunks, **workspaces**)
    - Qdrant: Vector embeddings for semantic search
 
 ### Key Components
@@ -94,14 +106,46 @@ app/
 - Generates embeddings and stores in Qdrant
 - Stores chunk metadata in Supabase
 
+**🆕 Workspace System** (Phase 0):
+- **DockerClient** (`app/services/docker_client.py`): Thread-safe Docker SDK wrapper
+  - Container creation with resource limits (512MB RAM, 0.5 CPU)
+  - Container lifecycle (start/stop/destroy)
+  - Command execution with retry logic
+- **WorkspaceManager** (`app/services/workspace_manager.py`): High-level orchestration
+  - Creates container + DB record atomically
+  - Manages workspace state transitions
+  - Handles cleanup on destroy
+- **FileSystemService** (`app/services/file_system.py`): Container file operations
+  - List, read, write, create, delete, rename files
+  - Base64 encoding for safe content transfer
+  - Path sanitization for security
+
 ## API Endpoints
 
+### Core APIs
 - `/api/health` - Health check
 - `/api/users/*` - User management
 - `/api/projects/*` - Project CRUD operations
 - `/api/chatbot/*` - RAG-based chatbot queries
 - `/api/roadmap/*` - Roadmap generation and retrieval
 - `/api/progress/*` - Learning progress tracking
+
+### 🆕 Workspace APIs (Phase 0)
+- `POST /api/workspaces/create` - Create new workspace container
+- `GET /api/workspaces/{id}` - Get workspace details
+- `GET /api/workspaces/project/{id}` - Get workspace by project
+- `DELETE /api/workspaces/{id}` - Destroy workspace and container
+- `POST /api/workspaces/{id}/start` - Start container
+- `POST /api/workspaces/{id}/stop` - Stop container
+- `GET /api/workspaces/{id}/status` - Get live container status
+
+### 🆕 File System APIs (Phase 0)
+- `GET /api/workspaces/{id}/files` - List directory contents
+- `GET /api/workspaces/{id}/files/content` - Read file content
+- `PUT /api/workspaces/{id}/files/content` - Write file content
+- `POST /api/workspaces/{id}/files` - Create file or directory
+- `DELETE /api/workspaces/{id}/files` - Delete file or directory
+- `POST /api/workspaces/{id}/files/rename` - Rename/move file
 
 ## Configuration
 
@@ -114,9 +158,21 @@ Settings are managed in `app/config.py` via environment variables:
 
 ## Running the Application
 
+### Prerequisites
+- Python 3.11+
+- Docker Desktop (for workspace containers)
+- uv (Python package manager)
+
+### Build Workspace Image (Required for Phase 0)
+```bash
+cd docker
+docker build -t gitguide-workspace:latest -f Dockerfile.workspace .
+```
+
+### Start the Server
 ```bash
 # Development
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 # Or use provided scripts
 ./run.sh      # Unix
@@ -158,3 +214,35 @@ pytest
 2. Use singleton pattern for client initialization
 3. Add configuration in `app/config.py` if needed
 
+**🆕 To modify workspace behavior:**
+1. Update container config in `app/services/docker_client.py`
+2. Modify workspace logic in `app/services/workspace_manager.py`
+3. Adjust file operations in `app/services/file_system.py`
+4. Update Dockerfile in `docker/Dockerfile.workspace` for new tools
+
+## Database Schema (Workspaces)
+
+```sql
+CREATE TABLE workspaces (
+  workspace_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES "User"(id) ON DELETE CASCADE,
+  project_id UUID REFERENCES projects(project_id) ON DELETE CASCADE,
+  container_id TEXT,
+  container_status TEXT DEFAULT 'created',
+  container_image TEXT DEFAULT 'gitguide-workspace:latest',
+  last_active_at TIMESTAMPTZ DEFAULT now(),
+  session_state JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, project_id)
+);
+```
+
+---
+
+## Development Roadmap
+
+- [x] **Phase 0**: Workspace Foundation (Docker + File System)
+- [ ] **Phase 1**: Terminal & Real Execution (WebSocket + xterm.js)
+- [ ] **Phase 2**: Git Integration (Clone, Commit, Push)
+- [ ] **Phase 3**: Verification System (AI-powered task verification)

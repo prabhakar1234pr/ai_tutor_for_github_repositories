@@ -7,6 +7,7 @@ import docker
 from docker.errors import NotFound, APIError, ImageNotFound
 from typing import Optional, Tuple
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -18,17 +19,28 @@ DEFAULT_IMAGE = "gitguide-workspace:latest"
 
 
 class DockerClient:
-    """Wrapper for Docker SDK operations on workspace containers."""
+    """
+    Thread-safe wrapper for Docker SDK operations on workspace containers.
+    
+    Creates a fresh Docker client for each operation to avoid connection issues
+    in multi-threaded environments like FastAPI.
+    """
+
+    _lock = threading.Lock()
 
     def __init__(self):
-        """Initialize Docker client connection."""
+        """Initialize Docker client - verify connection is available."""
         try:
-            self.client = docker.from_env()
-            self.client.ping()
-            logger.info("Docker client connected successfully")
+            client = docker.from_env()
+            client.ping()
+            logger.info("Docker client initialized - connection verified")
         except Exception as e:
             logger.error(f"Failed to connect to Docker: {e}")
             raise RuntimeError(f"Docker is not available: {e}")
+
+    def _get_client(self) -> docker.DockerClient:
+        """Get a fresh Docker client for thread-safe operations."""
+        return docker.from_env()
 
     def create_container(
         self,
@@ -50,7 +62,8 @@ class DockerClient:
             Tuple of (container_id, status)
         """
         try:
-            container = self.client.containers.create(
+            client = self._get_client()
+            container = client.containers.create(
                 image=image,
                 name=name,
                 detach=True,
@@ -60,6 +73,7 @@ class DockerClient:
                 privileged=False,
                 network_mode="bridge",
                 working_dir="/workspace",
+                tty=True,  # Keep container alive and enable proper exec
             )
             logger.info(f"Container created: {name} ({container.short_id})")
             return container.id, "created"
@@ -81,7 +95,8 @@ class DockerClient:
             True if started successfully
         """
         try:
-            container = self.client.containers.get(container_id)
+            client = self._get_client()
+            container = client.containers.get(container_id)
             container.start()
             logger.info(f"Container started: {container_id}")
             return True
@@ -104,7 +119,8 @@ class DockerClient:
             True if stopped successfully
         """
         try:
-            container = self.client.containers.get(container_id)
+            client = self._get_client()
+            container = client.containers.get(container_id)
             container.stop(timeout=timeout)
             logger.info(f"Container stopped: {container_id}")
             return True
@@ -127,7 +143,8 @@ class DockerClient:
             True if removed successfully
         """
         try:
-            container = self.client.containers.get(container_id)
+            client = self._get_client()
+            container = client.containers.get(container_id)
             container.remove(force=force)
             logger.info(f"Container removed: {container_id}")
             return True
@@ -149,7 +166,10 @@ class DockerClient:
             Status string: "running", "exited", "created", "paused", or "not_found"
         """
         try:
-            container = self.client.containers.get(container_id)
+            client = self._get_client()
+            container = client.containers.get(container_id)
+            # Reload to get fresh status
+            container.reload()
             return container.status
         except NotFound:
             return "not_found"
@@ -168,13 +188,14 @@ class DockerClient:
             True if container exists
         """
         try:
-            self.client.containers.get(container_id)
+            client = self._get_client()
+            client.containers.get(container_id)
             return True
         except NotFound:
             return False
 
     def exec_command(
-        self, container_id: str, command: str, workdir: Optional[str] = None
+        self, container_id: str, command: str, workdir: Optional[str] = None, retries: int = 2
     ) -> Tuple[int, str]:
         """
         Execute a command inside a running container.
@@ -183,37 +204,68 @@ class DockerClient:
             container_id: Container ID or name
             command: Command to execute
             workdir: Working directory (optional)
+            retries: Number of retry attempts for transient failures
 
         Returns:
             Tuple of (exit_code, output)
         """
-        try:
-            container = self.client.containers.get(container_id)
+        last_error = None
+        
+        for attempt in range(retries + 1):
+            try:
+                client = self._get_client()
+                container = client.containers.get(container_id)
+                
+                # Reload to get fresh status
+                container.reload()
 
-            if container.status != "running":
-                logger.error(f"Container {container_id} is not running")
-                return -1, "Container is not running"
+                if container.status != "running":
+                    logger.error(f"Container {container_id} is not running (status: {container.status})")
+                    return -1, f"Container is not running (status: {container.status})"
 
-            exec_result = container.exec_run(
-                cmd=["bash", "-c", command],
-                workdir=workdir or "/workspace",
-                demux=False,
-            )
+                logger.debug(f"Executing command in {container_id[:12]}: {command[:50]}...")
+                
+                exec_result = container.exec_run(
+                    cmd=["bash", "-c", command],
+                    workdir=workdir or "/workspace",
+                    demux=False,
+                    tty=False,
+                )
 
-            output = exec_result.output.decode("utf-8") if exec_result.output else ""
-            return exec_result.exit_code, output
+                output = exec_result.output.decode("utf-8") if exec_result.output else ""
+                
+                logger.debug(f"Command exit code: {exec_result.exit_code}, output length: {len(output)}")
+                
+                return exec_result.exit_code, output
 
-        except NotFound:
-            logger.error(f"Container not found: {container_id}")
-            return -1, "Container not found"
-        except APIError as e:
-            logger.error(f"Failed to exec in {container_id}: {e}")
-            return -1, str(e)
+            except NotFound:
+                logger.error(f"Container not found: {container_id}")
+                return -1, "Container not found"
+            except APIError as e:
+                last_error = str(e)
+                logger.warning(f"Exec attempt {attempt + 1} failed for {container_id}: {e}")
+                if attempt < retries:
+                    import time
+                    time.sleep(0.1 * (attempt + 1))  # Brief backoff
+                    continue
+                logger.error(f"Failed to exec in {container_id} after {retries + 1} attempts: {e}")
+                return -1, str(e)
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"Unexpected error in exec_command: {e}")
+                if attempt < retries:
+                    import time
+                    time.sleep(0.1 * (attempt + 1))
+                    continue
+                return -1, str(e)
+        
+        return -1, last_error or "Unknown error"
 
     def is_docker_available(self) -> bool:
         """Check if Docker daemon is available."""
         try:
-            self.client.ping()
+            client = self._get_client()
+            client.ping()
             return True
         except Exception:
             return False
@@ -221,12 +273,14 @@ class DockerClient:
 
 # Singleton instance
 _docker_client: Optional[DockerClient] = None
+_docker_client_lock = threading.Lock()
 
 
 def get_docker_client() -> DockerClient:
-    """Get or create the Docker client singleton."""
+    """Get or create the Docker client singleton (thread-safe)."""
     global _docker_client
     if _docker_client is None:
-        _docker_client = DockerClient()
+        with _docker_client_lock:
+            if _docker_client is None:
+                _docker_client = DockerClient()
     return _docker_client
-
