@@ -156,21 +156,25 @@ class FileSystemService:
         if exit_code != 0 and exit_code != -1:
             logger.warning(f"mkdir command returned {exit_code}: {output}")
         
-        # Write file - use printf instead of echo to handle large content better
-        # Also use a temp file approach for reliability
-        write_cmd = f"printf '%s' '{encoded_content}' | base64 -d > '{safe_path}'"
+        # Write file using echo with pipefail to catch errors
+        # Use set -o pipefail to detect pipeline failures
+        write_cmd = f"set -o pipefail; echo -n '{encoded_content}' | base64 -d > '{safe_path}' && sync"
         exit_code, output = self._docker_client.exec_command(container_id, write_cmd)
         
         if exit_code != 0:
-            logger.error(f"Failed to write file {path}: exit_code={exit_code}, output={output[:200]}")
+            logger.error(f"Failed to write file {path}: exit_code={exit_code}, output={output[:200] if output else 'no output'}")
             return False
         
         # Verify the write
         verify_cmd = f"test -f '{safe_path}' && echo 'OK' || echo 'FAIL'"
         exit_code, output = self._docker_client.exec_command(container_id, verify_cmd)
         
+        if exit_code == -1:
+            logger.error(f"Docker exec failed during write verification: {output}")
+            return False
+        
         if "OK" not in output:
-            logger.error(f"Write verification failed for {path}")
+            logger.error(f"Write verification failed for {path}: output={output}")
             return False
         
         logger.info(f"File written successfully: {safe_path}")
@@ -202,8 +206,8 @@ class FileSystemService:
             if exit_code != 0 and exit_code != -1:
                 logger.warning(f"mkdir returned {exit_code}: {output}")
         
-        # Touch the file
-        touch_cmd = f"touch '{safe_path}'"
+        # Touch the file and sync to ensure visibility
+        touch_cmd = f"touch '{safe_path}' && sync"
         exit_code, output = self._docker_client.exec_command(container_id, touch_cmd)
         
         if exit_code != 0:
@@ -213,6 +217,10 @@ class FileSystemService:
         # Verify the file was created
         verify_cmd = f"test -f '{safe_path}' && echo 'OK' || echo 'FAIL'"
         exit_code, output = self._docker_client.exec_command(container_id, verify_cmd)
+        
+        if exit_code == -1:
+            logger.error(f"Docker exec failed during create verification: {output}")
+            return False
         
         if "OK" not in output:
             logger.error(f"File creation verification failed for {path}: {output}")

@@ -319,7 +319,7 @@ async def mark_content_read(
                 "user_id": user_id,
                 "concept_id": concept_id,
                 "content_read": True,
-                "progress_status": "in_progress",
+                "progress_status": "doing",
                 "updated_at": now,
             }).execute()
         

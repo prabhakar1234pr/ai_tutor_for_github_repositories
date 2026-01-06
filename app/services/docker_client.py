@@ -45,15 +45,17 @@ class DockerClient:
     def create_container(
         self,
         name: str,
+        volume_name: Optional[str] = None,
         image: str = DEFAULT_IMAGE,
         memory_limit: str = DEFAULT_MEMORY_LIMIT,
         cpu_quota: int = DEFAULT_CPU_QUOTA,
     ) -> Tuple[str, str]:
         """
-        Create a new container with resource limits.
+        Create a new container with resource limits and optional persistent volume.
 
         Args:
             name: Unique container name
+            volume_name: Optional Docker volume name for /workspace persistence
             image: Docker image to use
             memory_limit: Memory limit (e.g., "512m")
             cpu_quota: CPU quota (50000 = 0.5 cores)
@@ -63,6 +65,15 @@ class DockerClient:
         """
         try:
             client = self._get_client()
+            
+            # Create volume mount if volume_name provided
+            volumes = None
+            if volume_name:
+                # Ensure volume exists
+                self.create_volume(volume_name)
+                volumes = {volume_name: {"bind": "/workspace", "mode": "rw"}}
+                logger.info(f"Mounting volume {volume_name} to /workspace")
+            
             container = client.containers.create(
                 image=image,
                 name=name,
@@ -73,7 +84,7 @@ class DockerClient:
                 privileged=False,
                 network_mode="bridge",
                 working_dir="/workspace",
-                tty=True,  # Keep container alive and enable proper exec
+                volumes=volumes,
             )
             logger.info(f"Container created: {name} ({container.short_id})")
             return container.id, "created"
@@ -268,6 +279,107 @@ class DockerClient:
             client.ping()
             return True
         except Exception:
+            return False
+
+    def create_volume(self, volume_name: str) -> bool:
+        """
+        Create a Docker volume if it doesn't exist.
+
+        Args:
+            volume_name: Name for the volume
+
+        Returns:
+            True if volume exists or was created successfully
+        
+        # ------------------------------------------------------------------
+        # GCP DEPLOYMENT: Single VM with Docker (No code changes needed)
+        # ------------------------------------------------------------------
+        # This code works as-is on a GCP Compute Engine VM:
+        #
+        # Setup:
+        #   1. Create e2-small VM (Ubuntu 22.04, 30GB disk)
+        #   2. Install Docker: sudo apt install docker.io -y
+        #   3. Docker volumes stored in /var/lib/docker/volumes/
+        #   4. VM's persistent disk preserves volumes across reboots
+        #
+        # Data safety:
+        #   - Container restarts: volumes persist
+        #   - Docker restarts: volumes persist
+        #   - VM reboots: volumes persist (on persistent disk)
+        #   - VM deletion: data lost (avoid deleting the VM)
+        #
+        # Cost: ~$15-18/month, $300 credits last 16+ months
+        # ------------------------------------------------------------------
+        """
+        try:
+            client = self._get_client()
+            
+            # Check if volume already exists
+            try:
+                client.volumes.get(volume_name)
+                logger.debug(f"Volume already exists: {volume_name}")
+                return True
+            except NotFound:
+                pass
+            
+            # Create volume
+            client.volumes.create(
+                name=volume_name,
+                driver="local",
+                labels={"app": "gitguide", "type": "workspace"}
+            )
+            logger.info(f"Volume created: {volume_name}")
+            return True
+        except APIError as e:
+            logger.error(f"Failed to create volume {volume_name}: {e}")
+            return False
+
+    def remove_volume(self, volume_name: str, force: bool = False) -> bool:
+        """
+        Remove a Docker volume.
+
+        Args:
+            volume_name: Name of the volume to remove
+            force: Force removal even if in use
+
+        Returns:
+            True if removed successfully
+        
+        # ------------------------------------------------------------------
+        # GCP DEPLOYMENT: Works as-is on Compute Engine VM
+        # ------------------------------------------------------------------
+        # Docker volumes on VM are removed with this same code.
+        # No changes needed for single-VM deployment.
+        # ------------------------------------------------------------------
+        """
+        try:
+            client = self._get_client()
+            volume = client.volumes.get(volume_name)
+            volume.remove(force=force)
+            logger.info(f"Volume removed: {volume_name}")
+            return True
+        except NotFound:
+            logger.warning(f"Volume not found: {volume_name}")
+            return True  # Already gone
+        except APIError as e:
+            logger.error(f"Failed to remove volume {volume_name}: {e}")
+            return False
+
+    def volume_exists(self, volume_name: str) -> bool:
+        """
+        Check if a Docker volume exists.
+
+        Args:
+            volume_name: Name of the volume
+
+        Returns:
+            True if volume exists
+        """
+        try:
+            client = self._get_client()
+            client.volumes.get(volume_name)
+            return True
+        except NotFound:
             return False
 
 

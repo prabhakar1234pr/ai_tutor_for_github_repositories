@@ -81,3 +81,64 @@ async def verify_clerk_token(authorization: Optional[str] = Header(None)) -> dic
     }
 
 
+async def verify_clerk_token_from_string(token: str) -> dict:
+    """Validate Clerk JWT from a raw token string (for WebSocket connections)."""
+    if not token:
+        raise HTTPException(401, "Token missing")
+
+    # Ensure Clerk secret key is configured
+    if not settings.clerk_secret_key:
+        logger.error("Clerk secret key missing")
+        raise HTTPException(500, "Authentication service not configured")
+
+    # Decode JWT (without verifying signature) to get user ID
+    try:
+        decoded = jwt.decode(token, options={"verify_signature": False})
+        clerk_user_id = decoded.get("sub")
+        if not clerk_user_id:
+            raise HTTPException(401, "Invalid token: user ID missing")
+    except Exception:
+        raise HTTPException(401, "Invalid token format")
+
+    # Fetch user from Clerk REST API
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"https://api.clerk.com/v1/users/{clerk_user_id}",
+                headers={"Authorization": f"Bearer {settings.clerk_secret_key}"}
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(500, "Clerk service timeout")
+    except Exception as e:
+        logger.error(f"Clerk API error: {e}")
+        raise HTTPException(500, "Failed to contact Clerk")
+
+    if resp.status_code == 401:
+        raise HTTPException(401, "Invalid Clerk API key")
+    if resp.status_code == 404:
+        raise HTTPException(401, "User not found")
+    if resp.status_code != 200:
+        logger.error(f"Clerk API error: {resp.status_code} - {resp.text}")
+        raise HTTPException(500, "Failed to verify user with Clerk")
+
+    user = resp.json()
+
+    # Extract email
+    email = None
+    emails = user.get("email_addresses", [])
+    primary_id = user.get("primary_email_address_id")
+
+    if emails:
+        primary = next((e for e in emails if e["id"] == primary_id), emails[0])
+        email = primary.get("email_address")
+
+    # Extract name
+    first = user.get("first_name") or ""
+    last = user.get("last_name") or ""
+    name = (first + " " + last).strip() or user.get("username")
+
+    return {
+        "clerk_user_id": clerk_user_id,
+        "email": email,
+        "name": name
+    }
