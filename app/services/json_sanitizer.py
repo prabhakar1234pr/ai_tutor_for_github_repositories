@@ -85,15 +85,22 @@ class JsonSanitizer:
         system_prompt = (
             "You are a JSON conversion expert. Your ONLY job is to convert markdown/code "
             "responses into valid JSON. Return ONLY valid JSON. Do NOT add any explanation, "
-            "comments, or markdown code blocks. Return ONLY the JSON."
+            "comments, or markdown code blocks. Return ONLY the JSON. "
+            "CRITICAL: Preserve ALL fields from the original response, especially the 'content' field. "
+            "Do NOT omit, truncate, or skip any fields."
         )
+        
+        # For content generation, we need to preserve the full response
+        # Content can be 1500-2500 words, which when escaped can be 10k+ chars
+        # Use a much larger limit, but still cap at reasonable size to avoid API limits
+        max_input_length = 16000  # Increased from 4000 to handle large content fields
         
         user_prompt = f"""Convert this response to valid JSON {expected_type}. The response may be in markdown, code, or other format. Extract the data and return ONLY valid JSON.
 
 **Expected Type:** {expected_type} ({'object/dict' if expected_type == 'object' else 'array/list'})
 
 **Response to Convert:**
-{malformed_response[:4000]}
+{malformed_response[:max_input_length]}
 
 {f'**Original Error:** {original_error}' if original_error else ''}
 
@@ -104,8 +111,10 @@ class JsonSanitizer:
 4. Properly escape all special characters (newlines as \\n, quotes as \\")
 5. Ensure all strings use double quotes
 6. Fix any syntax errors (missing commas, brackets, etc.)
-7. Preserve all data - extract all relevant information from the response
+7. **PRESERVE ALL DATA** - extract ALL relevant information from the response, especially the "content" field if present
 8. If the content contains markdown or code examples, properly escape them in JSON strings
+9. **DO NOT OMIT OR TRUNCATE ANY FIELDS** - ensure all fields from the original response are included in the JSON
+10. If the response contains a "content" field, preserve it completely - do not truncate or omit it
 
 **Return ONLY the fixed JSON, nothing else.**"""
         
@@ -121,7 +130,7 @@ class JsonSanitizer:
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": 0.1,  # Low temperature for consistent JSON output
-            "max_tokens": 4000,  # Should be enough for most JSON responses
+            "max_tokens": 16000,  # Increased to handle large content fields (1500-2500 words when escaped)
         }
         
         try:

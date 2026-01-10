@@ -213,9 +213,19 @@ async def generate_content_and_tasks(state: RoadmapAgentState) -> RoadmapAgentSt
             content_data = await parse_llm_json_response_async(content_response, expected_type="object")
             concept["content"] = content_data.get("content", "")
             concept["estimated_minutes"] = content_data.get("estimated_minutes", 15)
-            logger.debug(f"   Generated content ({len(concept['content'])} chars)")
+            
+            # Warn if content is empty after parsing
+            if not concept["content"] or concept["content"].strip() == "":
+                logger.warning(
+                    f"⚠️  Content is empty after parsing for concept '{concept['title']}'. "
+                    f"Parsed data keys: {list(content_data.keys())}. "
+                    f"Response preview: {content_response[:500]}"
+                )
+            else:
+                logger.debug(f"   Generated content ({len(concept['content'])} chars)")
         except Exception as parse_error:
             logger.warning(f"⚠️  Failed to parse content JSON: {parse_error}")
+            logger.debug(f"   Response preview: {content_response[:500]}")
             concept["content"] = ""
             concept["estimated_minutes"] = 15
         

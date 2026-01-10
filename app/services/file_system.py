@@ -5,6 +5,8 @@ Provides file operations inside Docker containers using exec commands.
 
 import base64
 import logging
+import shlex
+import posixpath
 from typing import List, Optional
 from dataclasses import dataclass
 from app.services.docker_client import get_docker_client, DockerClient
@@ -56,7 +58,8 @@ class FileSystemService:
         # -A: all except . and ..
         # -l: long format
         # --time-style=+%s: unix timestamp
-        command = f"ls -Alh --time-style=+%s '{safe_path}' 2>/dev/null || echo 'ERROR_DIR_NOT_FOUND'"
+        quoted_path = shlex.quote(safe_path)
+        command = f"ls -Alh --time-style=+%s {quoted_path} 2>/dev/null || echo 'ERROR_DIR_NOT_FOUND'"
         
         exit_code, output = self._docker_client.exec_command(container_id, command)
         
@@ -99,8 +102,9 @@ class FileSystemService:
         
         logger.info(f"Reading file in container {container_id[:12]}: {safe_path}")
         
+        quoted_path = shlex.quote(safe_path)
         # Check if file exists and is readable
-        check_cmd = f"test -f '{safe_path}' && test -r '{safe_path}' && echo 'OK' || echo 'ERROR'"
+        check_cmd = f"test -f {quoted_path} && test -r {quoted_path} && echo 'OK' || echo 'ERROR'"
         exit_code, output = self._docker_client.exec_command(container_id, check_cmd)
         
         # Check for docker client errors
@@ -113,7 +117,7 @@ class FileSystemService:
             return None
         
         # Read file using base64 to handle binary/special chars safely
-        command = f"base64 '{safe_path}'"
+        command = f"base64 {quoted_path}"
         exit_code, output = self._docker_client.exec_command(container_id, command)
         
         if exit_code != 0:
@@ -150,7 +154,9 @@ class FileSystemService:
         
         # Create parent directory if needed, then write using base64 decode pipe to file
         # Split into multiple commands for reliability
-        mkdir_cmd = f"mkdir -p \"$(dirname '{safe_path}')\""
+        quoted_path = shlex.quote(safe_path)
+        quoted_dirname = shlex.quote(posixpath.dirname(safe_path))
+        mkdir_cmd = f"mkdir -p {quoted_dirname}"
         exit_code, output = self._docker_client.exec_command(container_id, mkdir_cmd)
         
         if exit_code != 0 and exit_code != -1:
@@ -158,7 +164,7 @@ class FileSystemService:
         
         # Write file using echo with pipefail to catch errors
         # Use set -o pipefail to detect pipeline failures
-        write_cmd = f"set -o pipefail; echo -n '{encoded_content}' | base64 -d > '{safe_path}' && sync"
+        write_cmd = f"set -o pipefail; echo -n '{encoded_content}' | base64 -d > {quoted_path} && sync"
         exit_code, output = self._docker_client.exec_command(container_id, write_cmd)
         
         if exit_code != 0:
@@ -166,7 +172,7 @@ class FileSystemService:
             return False
         
         # Verify the write
-        verify_cmd = f"test -f '{safe_path}' && echo 'OK' || echo 'FAIL'"
+        verify_cmd = f"test -f {quoted_path} && echo 'OK' || echo 'FAIL'"
         exit_code, output = self._docker_client.exec_command(container_id, verify_cmd)
         
         if exit_code == -1:
@@ -196,7 +202,6 @@ class FileSystemService:
         logger.info(f"Creating file in container {container_id[:12]}: {safe_path}")
         
         # Extract parent directory from path (use posixpath for Unix-style paths)
-        import posixpath
         parent_dir = posixpath.dirname(safe_path)
         
         # Create parent directory if it's not the workspace root
@@ -207,7 +212,8 @@ class FileSystemService:
                 logger.warning(f"mkdir returned {exit_code}: {output}")
         
         # Touch the file and sync to ensure visibility
-        touch_cmd = f"touch '{safe_path}' && sync"
+        quoted_path = shlex.quote(safe_path)
+        touch_cmd = f"touch {quoted_path} && sync"
         exit_code, output = self._docker_client.exec_command(container_id, touch_cmd)
         
         if exit_code != 0:
@@ -215,7 +221,7 @@ class FileSystemService:
             return False
         
         # Verify the file was created
-        verify_cmd = f"test -f '{safe_path}' && echo 'OK' || echo 'FAIL'"
+        verify_cmd = f"test -f {quoted_path} && echo 'OK' || echo 'FAIL'"
         exit_code, output = self._docker_client.exec_command(container_id, verify_cmd)
         
         if exit_code == -1:
@@ -244,7 +250,8 @@ class FileSystemService:
         
         logger.info(f"Creating directory in container {container_id[:12]}: {safe_path}")
         
-        command = f"mkdir -p '{safe_path}'"
+        quoted_path = shlex.quote(safe_path)
+        command = f"mkdir -p {quoted_path}"
         exit_code, output = self._docker_client.exec_command(container_id, command)
         
         if exit_code != 0:
@@ -275,7 +282,8 @@ class FileSystemService:
         logger.info(f"Deleting in container {container_id[:12]}: {safe_path}")
         
         # Use rm -rf for both files and directories
-        command = f"rm -rf '{safe_path}'"
+        quoted_path = shlex.quote(safe_path)
+        command = f"rm -rf {quoted_path}"
         exit_code, output = self._docker_client.exec_command(container_id, command)
         
         if exit_code != 0:
@@ -302,7 +310,9 @@ class FileSystemService:
         
         logger.info(f"Renaming in container {container_id[:12]}: {safe_old} -> {safe_new}")
         
-        command = f"mv '{safe_old}' '{safe_new}'"
+        quoted_old = shlex.quote(safe_old)
+        quoted_new = shlex.quote(safe_new)
+        command = f"mv {quoted_old} {quoted_new}"
         exit_code, output = self._docker_client.exec_command(container_id, command)
         
         if exit_code != 0:
@@ -324,8 +334,9 @@ class FileSystemService:
             True if exists
         """
         safe_path = self._sanitize_path(path)
+        quoted_path = shlex.quote(safe_path)
         
-        command = f"test -e '{safe_path}' && echo 'EXISTS' || echo 'NOT_FOUND'"
+        command = f"test -e {quoted_path} && echo 'EXISTS' || echo 'NOT_FOUND'"
         exit_code, output = self._docker_client.exec_command(container_id, command)
         
         return "EXISTS" in output
@@ -336,8 +347,6 @@ class FileSystemService:
         Ensures path is under /workspace.
         Uses posixpath for Unix-style paths (Docker containers).
         """
-        import posixpath
-        
         # Remove any null bytes
         path = path.replace('\x00', '')
         
