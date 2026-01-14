@@ -249,6 +249,88 @@ Having months of inactivity followed by sudden bursts looks unprofessional. Try 
 
 ---
 
+## Personal Access Tokens (PATs)
+
+### What is a Personal Access Token?
+
+A **Personal Access Token (PAT)** is a secure way to authenticate with GitHub without using your password. Think of it as a special key that grants specific permissions to applications or services.
+
+**Why We Use PATs:**
+- More secure than passwords (can be revoked individually)
+- Scoped to specific repositories and permissions
+- Fine-grained control over what access is granted
+- Required for GitGuide to sync your code and verify your progress
+
+### Understanding Fine-Grained PATs
+
+GitHub offers two types of PATs:
+1. **Classic PATs**: Broad access to all repositories (not what we need)
+2. **Fine-Grained PATs**: Scoped to specific repositories with granular permissions (what we use)
+
+**Fine-Grained PAT Benefits:**
+- ✅ Access only to your specific repository (not all repos)
+- ✅ Granular permissions (read/write contents only)
+- ✅ More secure and privacy-focused
+- ✅ Can be revoked anytime without affecting other access
+
+### How to Create a Fine-Grained PAT
+
+**Step-by-Step Instructions:**
+
+1. **Navigate to GitHub Settings**
+   - Click your profile picture (top right)
+   - Select "Settings"
+   - Scroll down to "Developer settings" (left sidebar)
+   - Click "Personal access tokens"
+   - Click "Fine-grained tokens"
+   - Click "Generate new token"
+
+2. **Configure Token Settings**
+   - **Token name**: Enter a descriptive name (e.g., "GitGuide Learning Project")
+   - **Description**: Optional, but helpful (e.g., "For GitGuide learning platform")
+   - **Expiration**: Choose expiration period (90 days recommended for learning projects)
+
+3. **Set Repository Access**
+   - Select **"Only select repositories"**
+   - Search for and select the repository you created in Task 2
+   - ⚠️ **Important**: Do NOT select "All repositories" - this gives access to everything
+
+4. **Set Repository Permissions**
+   - Expand **"Repository permissions"** section
+   - Find **"Contents"** permission
+   - Select **"Read and write"** (required for GitGuide to commit and push)
+   - Leave other permissions as "No access" (we only need Contents access)
+
+5. **Generate and Copy Token**
+   - Click **"Generate token"** button
+   - ⚠️ **Critical**: Copy the token immediately - GitHub only shows it once!
+   - Store it securely - you'll paste it into GitGuide in the next task
+
+**Security Best Practices:**
+- Never share your PAT with anyone
+- Don't commit PATs to your repository
+- Revoke old tokens if you generate new ones
+- Set reasonable expiration dates
+- Use fine-grained tokens (not classic) for better security
+
+### Why GitGuide Needs Your PAT
+
+GitGuide uses your PAT to:
+- **Clone your repository** into the workspace container
+- **Pull latest changes** before you start working
+- **Commit your code** after task completion
+- **Push changes** to GitHub to save your progress
+- **Verify your work** by comparing code changes
+
+**What GitGuide Does NOT Do:**
+- Access your other repositories
+- Modify your account settings
+- Delete repositories
+- Access your private information
+- Make changes outside your learning repository
+
+---
+
 ## Summary
 
 You now understand:
@@ -264,7 +346,7 @@ You now understand:
 - ✅ Know what makes a professional repository
 - ✅ Avoid common mistakes like committing secrets
 
-**Next Steps:** Complete the tasks below to verify your GitHub setup and create your first repository for this learning journey!
+**Next Steps:** Complete the tasks below to verify your GitHub setup, create your repository, connect your account, and make your first commit!
 """,
         "tasks": [
             {
@@ -282,6 +364,20 @@ You now understand:
                 "task_type": "create_repo",
                 "estimated_minutes": 5,
                 "difficulty": "easy"
+            },
+            {
+                "order_index": 2.5,
+                "title": "Connect GitHub Account & Accept Terms",
+                "description": "To enable code synchronization and accurate task verification, GitGuide needs access to your repository. Create a fine-grained Personal Access Token (PAT) scoped only to your repository. Step-by-step instructions: 1) Go to GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token, 2) Name your token (e.g., 'GitGuide Learning'), 3) Set expiration (90 days recommended), 4) Under 'Repository access', select 'Only select repositories' and choose the repository you created in Task 2, 5) Under 'Repository permissions', expand 'Contents' and select 'Read and write', 6) Click 'Generate token' and copy the token immediately (you won't see it again). Paste the token below and accept the terms to continue.",
+                "task_type": "github_connect",
+                "estimated_minutes": 10,
+                "difficulty": "easy",
+                "hints": [
+                    "Make sure you select 'Only select repositories' and choose your specific repository, not 'All repositories'",
+                    "The token must have 'Contents' read and write permissions",
+                    "Copy the token immediately after generation - GitHub only shows it once",
+                    "If you lose the token, you'll need to generate a new one"
+                ]
             },
             {
                 "order_index": 3,

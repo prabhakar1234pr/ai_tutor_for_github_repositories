@@ -13,6 +13,7 @@ from app.api.progress import router as progress_router
 from app.api.workspaces import router as workspaces_router
 from app.api.files import router as files_router
 from app.api.terminal import router as terminal_router
+from app.api.github_consent import router as github_consent_router
 from app.core.startup import startup_services, shutdown_services
 
 # Configure logging from settings
@@ -113,3 +114,4 @@ app.include_router(progress_router, prefix="/api/progress", tags=["progress"])
 app.include_router(workspaces_router, prefix="/api/workspaces", tags=["workspaces"])
 app.include_router(files_router, prefix="/api/workspaces", tags=["files"])
 app.include_router(terminal_router, prefix="/api/terminal", tags=["terminal"])
+app.include_router(github_consent_router, prefix="/api/github", tags=["github"])

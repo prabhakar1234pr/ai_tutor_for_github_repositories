@@ -5,6 +5,7 @@ Handles day, concept, and task progress with analytics timestamps.
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from typing import Optional
 from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
 from supabase import Client
@@ -429,15 +430,23 @@ async def complete_day(
         raise HTTPException(status_code=500, detail=f"Failed to complete day: {str(e)}")
 
 
+class CompleteTaskRequest(BaseModel):
+    github_username: Optional[str] = None  # For github_profile task
+    user_repo_url: Optional[str] = None  # For create_repo task
+    commit_sha: Optional[str] = None  # For verify_commit task
+
+
 @router.post("/{project_id}/task/{task_id}/complete")
 async def complete_task(
     project_id: str,
     task_id: str,
+    request: Optional[CompleteTaskRequest] = None,
     user_info: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_supabase_client)
 ):
     """
     Mark task as completed and record completion time.
+    Optionally stores project-specific data (repo_url, commit_sha) for Day 0 tasks.
     """
     try:
         clerk_user_id = user_info["clerk_user_id"]
@@ -450,11 +459,12 @@ async def complete_task(
         user_id = user_response.data[0]["id"]
         
         # Verify task exists and belongs to project
-        task_response = supabase.table("tasks").select("task_id, concept_id").eq("task_id", task_id).execute()
+        task_response = supabase.table("tasks").select("task_id, concept_id, task_type").eq("task_id", task_id).execute()
         if not task_response.data:
             raise HTTPException(status_code=404, detail="Task not found")
         
         task = task_response.data[0]
+        task_type = task.get("task_type")
         
         # Verify concept belongs to project
         concept_response = supabase.table("concepts").select("concept_id, day_id").eq("concept_id", task["concept_id"]).execute()
@@ -488,6 +498,22 @@ async def complete_task(
                 "completed_at": now,
                 "updated_at": now,
             }).execute()
+        
+        # Store project-specific data for Day 0 tasks
+        project_updates = {}
+        if request:
+            if task_type == "github_profile" and request.github_username:
+                project_updates["github_username"] = request.github_username
+                logger.info(f"Storing github_username for project {project_id}: {request.github_username}")
+            elif task_type == "create_repo" and request.user_repo_url:
+                project_updates["user_repo_url"] = request.user_repo_url
+                logger.info(f"Storing user_repo_url for project {project_id}: {request.user_repo_url}")
+            elif task_type == "verify_commit" and request.commit_sha:
+                project_updates["user_repo_first_commit"] = request.commit_sha
+                logger.info(f"Storing user_repo_first_commit for project {project_id}: {request.commit_sha}")
+        
+        if project_updates:
+            supabase.table("Projects").update(project_updates).eq("project_id", project_id).eq("user_id", user_id).execute()
         
         # Check if all tasks for this concept are done, then auto-complete concept
         await _check_and_complete_concept_if_ready(supabase, user_id, task["concept_id"], project_id)
