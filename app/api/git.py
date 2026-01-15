@@ -221,12 +221,17 @@ def push_changes(
 
     # Update last_platform_commit after successful push
     # This ensures commits made through the platform are tracked correctly
-    head_result = git_service.git_rev_parse(container_id, "HEAD")
-    if head_result.get("success") and head_result.get("sha"):
-        supabase.table("workspaces").update({
-            "last_platform_commit": head_result.get("sha")
-        }).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
-        logger.info(f"Updated last_platform_commit to {head_result.get('sha')[:7]} for workspace {workspace_id}")
+    # Wrap in try-except to ensure push success is returned even if update fails
+    try:
+        head_result = git_service.git_rev_parse(container_id, "HEAD")
+        if head_result.get("success") and head_result.get("sha"):
+            supabase.table("workspaces").update({
+                "last_platform_commit": head_result.get("sha")
+            }).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
+            logger.info(f"Updated last_platform_commit to {head_result.get('sha')[:7]} for workspace {workspace_id}")
+    except Exception as e:
+        logger.warning(f"Failed to update last_platform_commit for workspace {workspace_id}: {e}")
+        # Don't fail the push if database update fails
 
     return result
 
@@ -343,11 +348,18 @@ def list_commits(
     supabase: Client = Depends(get_supabase_client),
     workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
 ):
-    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
-    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
-    git_service = GitService()
+    try:
+        user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+        container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+        git_service = GitService()
 
-    result = git_service.git_log(container_id, range_spec=range_spec, max_count=max_count)
-    if not result.get("success"):
-        raise HTTPException(status_code=500, detail=result.get("error", "Failed to get commits"))
-    return result
+        result = git_service.git_log(container_id, range_spec=range_spec, max_count=max_count)
+        if not result.get("success"):
+            logger.error(f"Failed to get commits for workspace {workspace_id}: {result.get('error')}")
+            raise HTTPException(status_code=500, detail=result.get("error", "Failed to get commits"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error getting commits for workspace {workspace_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get commits: {str(e)}")
