@@ -47,8 +47,9 @@ async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentStat
     Difficulty: {repo_analysis['difficulty']}
     """
     
-    # Calculate last day number (Day 0 is fixed, so days 1 to target_days-1)
-    last_day_number = target_days - 1  # If target_days=14, we generate days 1-13
+    # Calculate last day number (Day 0 is handled separately via API endpoint)
+    # If target_days=14, we generate days 1-13 (Day 0 is separate, so 14 days total)
+    last_day_number = target_days - 1
     
     # Format the prompt
     prompt = CURRICULUM_PLANNING_PROMPT.format(

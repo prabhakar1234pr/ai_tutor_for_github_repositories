@@ -5,10 +5,12 @@ from app.utils.clerk_auth import verify_clerk_token
 from app.utils.github_utils import extract_project_name, validate_github_url
 from app.services.embedding_pipeline import run_embedding_pipeline
 from app.services.qdrant_service import get_qdrant_service
+from app.agents.day0 import get_day_0_content
+from app.utils.markdown_sanitizer import sanitize_markdown_content
 from supabase import Client
 import logging
 import time
-from typing import Literal
+from typing import Literal, Dict
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -97,6 +99,14 @@ async def create_project(
         logger.info(f"Project created successfully: {project_id}")
         logger.info(f"⏱️  [TIMING] API endpoint completed in {api_duration:.3f}s - Project inserted into database")
         
+        # Initialize Day 0 content immediately
+        try:
+            # Call the Day 0 initialization logic directly
+            await _initialize_day0_internal(str(project_id), user_id, supabase)
+        except Exception as e:
+            logger.error(f"❌ Error initializing Day 0: {e}", exc_info=True)
+            # Don't fail project creation if Day 0 fails - it can be retried
+        
         # Trigger embedding pipeline in background
         # Pass the API start time to track total time from user click to completion
         background_tasks.add_task(
@@ -126,6 +136,354 @@ async def create_project(
     except Exception as e:
         logger.error(f"Error creating project: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create project: {str(e)}")
+
+
+async def _initialize_day0_internal(project_id: str, user_id: str, supabase: Client):
+    """
+    Internal function to initialize Day 0 content.
+    Can be called from project creation or as a standalone endpoint.
+    """
+    logger.info(f"📝 Initializing Day 0 content for project_id={project_id}")
+    
+    # Verify project exists and belongs to the user
+    project_response = supabase.table("Projects").select("*").eq("project_id", project_id).eq("user_id", user_id).execute()
+    
+    if not project_response.data or len(project_response.data) == 0:
+        raise ValueError("Project not found or you don't have permission")
+    
+    project = project_response.data[0]
+    project_status = project.get("status")
+    
+    # Check if project is in valid status
+    if project_status not in ["created", "processing"]:
+        raise ValueError(f"Project must be in 'created' or 'processing' status. Current status: {project_status}")
+    
+    # Check if Day 0 already exists
+    day0_response = (
+        supabase.table("roadmap_days")
+        .select("day_id, day_number, generated_status")
+        .eq("project_id", project_id)
+        .eq("day_number", 0)
+        .execute()
+    )
+    
+    day0_id = None
+    if day0_response.data and len(day0_response.data) > 0:
+        day0_id = day0_response.data[0]["day_id"]
+        generated_status = day0_response.data[0].get("generated_status")
+        
+        if generated_status == "generated":
+            logger.info(f"✅ Day 0 already generated for project {project_id}")
+            return {
+                "success": True,
+                "message": "Day 0 already initialized",
+                "day0_id": day0_id,
+                "already_exists": True
+            }
+    
+    # Insert Day 0 into roadmap_days if not exists
+    if not day0_id:
+        day0_theme, _ = get_day_0_content()
+        day0_insert = {
+            "project_id": project_id,
+            "day_number": 0,
+            "theme": day0_theme["theme"],
+            "description": day0_theme["description"],
+            "estimated_minutes": 30,
+            "generated_status": "pending",
+        }
+        
+        day0_insert_response = supabase.table("roadmap_days").insert(day0_insert).execute()
+        
+        if not day0_insert_response.data:
+            raise ValueError("Failed to insert Day 0 into roadmap_days")
+        
+        day0_id = day0_insert_response.data[0]["day_id"]
+        logger.info(f"✅ Inserted Day 0 into roadmap_days: {day0_id}")
+    
+    # Get Day 0 content
+    _, day0_concepts = get_day_0_content()
+    
+    # Insert concepts with content field
+    concepts_to_insert = []
+    for concept in day0_concepts:
+        raw_content = concept.get("content", "")
+        sanitized_content = sanitize_markdown_content(raw_content)
+        concepts_to_insert.append({
+            "day_id": day0_id,
+            "order_index": concept["order_index"],
+            "title": concept["title"],
+            "description": concept["description"],
+            "content": sanitized_content,
+            "estimated_minutes": concept.get("estimated_minutes", 10),
+            "generated_status": "generated",
+        })
+    
+    concepts_response = supabase.table("concepts").insert(concepts_to_insert).execute()
+    
+    if not concepts_response.data:
+        raise ValueError("Failed to insert Day 0 concepts")
+    
+    logger.info(f"✅ Inserted {len(concepts_response.data)} concepts for Day 0")
+    
+    # Create mapping: order_index -> concept_id
+    concept_ids_map: Dict[int, str] = {}
+    for concept_data in concepts_response.data:
+        order_idx = concept_data["order_index"]
+        concept_id = concept_data["concept_id"]
+        concept_ids_map[order_idx] = concept_id
+    
+    # Insert tasks for each concept
+    total_tasks = 0
+    for concept in day0_concepts:
+        concept_id = concept_ids_map[concept["order_index"]]
+        
+        if concept.get("tasks"):
+            tasks_to_insert = []
+            for task in concept["tasks"]:
+                tasks_to_insert.append({
+                    "concept_id": concept_id,
+                    "order_index": task["order_index"],
+                    "title": task["title"],
+                    "description": task["description"],
+                    "task_type": task["task_type"],
+                    "estimated_minutes": task.get("estimated_minutes", 15),
+                    "difficulty": task.get("difficulty", "medium"),
+                    "hints": task.get("hints", []),
+                    "solution": task.get("solution"),
+                    "generated_status": "generated",
+                })
+            
+            supabase.table("tasks").insert(tasks_to_insert).execute()
+            total_tasks += len(tasks_to_insert)
+            logger.debug(f"   Inserted {len(tasks_to_insert)} tasks for concept {concept['title']}")
+    
+    # Mark Day 0 as generated
+    supabase.table("roadmap_days").update({
+        "generated_status": "generated"
+    }).eq("day_id", day0_id).execute()
+    
+    logger.info(f"✅ Day 0 content initialized successfully: {len(concepts_response.data)} concepts, {total_tasks} tasks")
+    
+    return {
+        "success": True,
+        "message": "Day 0 initialized successfully",
+        "day0_id": day0_id,
+        "concepts_count": len(concepts_response.data),
+        "tasks_count": total_tasks,
+        "already_exists": False
+    }
+
+
+@router.post("/{project_id}/initialize-day0")
+async def initialize_day0_content(
+    project_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client)
+):
+    """
+    Initialize Day 0 content for a project.
+    This endpoint should be called when a project is created or in processing phase.
+    
+    Flow:
+    1. Verify project exists and belongs to user
+    2. Check project status (must be "created" or "processing")
+    3. Check if Day 0 already exists
+    4. Insert Day 0 into roadmap_days if not exists
+    5. Generate and save Day 0 content (concepts and tasks)
+    6. Mark Day 0 as generated
+    
+    Returns:
+        dict with success status and details
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+        
+        # Get user_id
+        user_response = supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        
+        if not user_response.data or len(user_response.data) == 0:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_id = user_response.data[0]["id"]
+        
+        # Call internal function
+        result = await _initialize_day0_internal(project_id, user_id, supabase)
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error initializing Day 0: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to initialize Day 0: {str(e)}")
+    """
+    Initialize Day 0 content for a project.
+    This endpoint should be called when a project is created or in processing phase.
+    
+    Flow:
+    1. Verify project exists and belongs to user
+    2. Check project status (must be "created" or "processing")
+    3. Check if Day 0 already exists
+    4. Insert Day 0 into roadmap_days if not exists
+    5. Generate and save Day 0 content (concepts and tasks)
+    6. Mark Day 0 as generated
+    
+    Returns:
+        dict with success status and details
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+        
+        logger.info(f"📝 Initializing Day 0 content for project_id={project_id}")
+        
+        # Get user_id
+        user_response = supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        
+        if not user_response.data or len(user_response.data) == 0:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        user_id = user_response.data[0]["id"]
+        
+        # Verify project exists and belongs to the user
+        project_response = supabase.table("Projects").select("*").eq("project_id", project_id).eq("user_id", user_id).execute()
+        
+        if not project_response.data or len(project_response.data) == 0:
+            raise HTTPException(status_code=404, detail="Project not found or you don't have permission")
+        
+        project = project_response.data[0]
+        project_status = project.get("status")
+        
+        # Check if project is in valid status
+        if project_status not in ["created", "processing"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project must be in 'created' or 'processing' status. Current status: {project_status}"
+            )
+        
+        # Check if Day 0 already exists
+        day0_response = (
+            supabase.table("roadmap_days")
+            .select("day_id, day_number, generated_status")
+            .eq("project_id", project_id)
+            .eq("day_number", 0)
+            .execute()
+        )
+        
+        day0_id = None
+        if day0_response.data and len(day0_response.data) > 0:
+            day0_id = day0_response.data[0]["day_id"]
+            generated_status = day0_response.data[0].get("generated_status")
+            
+            if generated_status == "generated":
+                logger.info(f"✅ Day 0 already generated for project {project_id}")
+                return {
+                    "success": True,
+                    "message": "Day 0 already initialized",
+                    "day0_id": day0_id,
+                    "already_exists": True
+                }
+        
+        # Insert Day 0 into roadmap_days if not exists
+        if not day0_id:
+            day0_theme, _ = get_day_0_content()
+            day0_insert = {
+                "project_id": project_id,
+                "day_number": 0,
+                "theme": day0_theme["theme"],
+                "description": day0_theme["description"],
+                "estimated_minutes": 30,
+                "generated_status": "pending",
+            }
+            
+            day0_insert_response = supabase.table("roadmap_days").insert(day0_insert).execute()
+            
+            if not day0_insert_response.data:
+                raise HTTPException(status_code=500, detail="Failed to insert Day 0 into roadmap_days")
+            
+            day0_id = day0_insert_response.data[0]["day_id"]
+            logger.info(f"✅ Inserted Day 0 into roadmap_days: {day0_id}")
+        
+        # Get Day 0 content
+        _, day0_concepts = get_day_0_content()
+        
+        # Insert concepts with content field
+        concepts_to_insert = []
+        for concept in day0_concepts:
+            raw_content = concept.get("content", "")
+            sanitized_content = sanitize_markdown_content(raw_content)
+            concepts_to_insert.append({
+                "day_id": day0_id,
+                "order_index": concept["order_index"],
+                "title": concept["title"],
+                "description": concept["description"],
+                "content": sanitized_content,
+                "estimated_minutes": concept.get("estimated_minutes", 10),
+                "generated_status": "generated",
+            })
+        
+        concepts_response = supabase.table("concepts").insert(concepts_to_insert).execute()
+        
+        if not concepts_response.data:
+            raise HTTPException(status_code=500, detail="Failed to insert Day 0 concepts")
+        
+        logger.info(f"✅ Inserted {len(concepts_response.data)} concepts for Day 0")
+        
+        # Create mapping: order_index -> concept_id
+        concept_ids_map: Dict[int, str] = {}
+        for concept_data in concepts_response.data:
+            order_idx = concept_data["order_index"]
+            concept_id = concept_data["concept_id"]
+            concept_ids_map[order_idx] = concept_id
+        
+        # Insert tasks for each concept
+        total_tasks = 0
+        for concept in day0_concepts:
+            concept_id = concept_ids_map[concept["order_index"]]
+            
+            if concept.get("tasks"):
+                tasks_to_insert = []
+                for task in concept["tasks"]:
+                    tasks_to_insert.append({
+                        "concept_id": concept_id,
+                        "order_index": task["order_index"],
+                        "title": task["title"],
+                        "description": task["description"],
+                        "task_type": task["task_type"],
+                        "estimated_minutes": task.get("estimated_minutes", 15),
+                        "difficulty": task.get("difficulty", "medium"),
+                        "hints": task.get("hints", []),
+                        "solution": task.get("solution"),
+                        "generated_status": "generated",
+                    })
+                
+                supabase.table("tasks").insert(tasks_to_insert).execute()
+                total_tasks += len(tasks_to_insert)
+                logger.debug(f"   Inserted {len(tasks_to_insert)} tasks for concept {concept['title']}")
+        
+        # Mark Day 0 as generated
+        supabase.table("roadmap_days").update({
+            "generated_status": "generated"
+        }).eq("day_id", day0_id).execute()
+        
+        logger.info(f"✅ Day 0 content initialized successfully: {len(concepts_response.data)} concepts, {total_tasks} tasks")
+        
+        return {
+            "success": True,
+            "message": "Day 0 initialized successfully",
+            "day0_id": day0_id,
+            "concepts_count": len(concepts_response.data),
+            "tasks_count": total_tasks,
+            "already_exists": False
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error initializing Day 0: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to initialize Day 0: {str(e)}")
 
 
 @router.get("/user/list")

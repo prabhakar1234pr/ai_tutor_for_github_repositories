@@ -11,8 +11,8 @@ from app.agents.prompts import (
     CONTENT_GENERATION_PROMPT,
     TASKS_GENERATION_PROMPT,
 )
-from app.agents.day0 import get_day_0_content
 from app.core.supabase_client import get_supabase_client
+# Note: Day 0 is handled separately via API endpoint, not imported here
 from app.utils.json_parser import parse_llm_json_response_async
 from app.utils.type_validator import (
     validate_and_normalize_tasks,
@@ -21,19 +21,7 @@ from app.utils.type_validator import (
 
 logger = logging.getLogger(__name__)
 
-
-def generate_day0_content(state: RoadmapAgentState) -> RoadmapAgentState:
-    """
-    Get Day 0 fixed content and add it to state.
-    """
-    logger.info("📝 Generating Day 0 content (fixed)...")
-    
-    _, day0_concepts = get_day_0_content()
-    state["_day0_concepts"] = day0_concepts
-    
-    logger.info(f"✅ Day 0 content prepared ({len(day0_concepts)} concepts)")
-    
-    return state
+# Note: generate_day0_content has been removed - Day 0 is now handled via API endpoint
 
 
 def select_next_incomplete_day(state: RoadmapAgentState) -> RoadmapAgentState:

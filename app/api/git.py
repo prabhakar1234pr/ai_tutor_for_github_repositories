@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from supabase import Client
 import logging
-from typing import Optional
+from typing import Optional, List
 import re
 
 from app.core.supabase_client import get_supabase_client
@@ -30,6 +30,7 @@ class CommitRequest(BaseModel):
 class PushRequest(BaseModel):
     branch: str = Field(default="main", description="Branch name")
     force: bool = False
+    set_upstream: bool = Field(default=False, description="Set upstream tracking (use for new branches)")
 
 
 class PullRequest(BaseModel):
@@ -42,6 +43,41 @@ class PullRequest(BaseModel):
 
 class ResetExternalRequest(BaseModel):
     confirmed: bool = Field(..., description="User confirmed reset")
+
+
+class StageRequest(BaseModel):
+    files: Optional[List[str]] = Field(default=None, description="List of file paths to stage. If empty, stages all changes.")
+
+
+class UnstageRequest(BaseModel):
+    files: Optional[List[str]] = Field(default=None, description="List of file paths to unstage. If empty, unstages all staged files.")
+
+
+class CreateBranchRequest(BaseModel):
+    branch_name: str = Field(..., description="Name of the branch to create")
+    start_point: Optional[str] = Field(default=None, description="Starting point (commit/branch) for the new branch")
+
+
+class CheckoutBranchRequest(BaseModel):
+    branch_name: str = Field(..., description="Name of the branch to checkout")
+    create: bool = Field(default=False, description="Create branch if it doesn't exist")
+
+
+class DeleteBranchRequest(BaseModel):
+    branch_name: str = Field(..., description="Name of the branch to delete")
+    force: bool = Field(default=False, description="Force delete even if not merged")
+
+
+class ResolveConflictRequest(BaseModel):
+    file_path: str = Field(..., description="Path to the conflicted file")
+    side: str = Field(default="ours", description="Resolution side: ours, theirs, or both (manual)")
+    content: Optional[str] = Field(default=None, description="Manual resolution content (required if side=both)")
+
+
+class MergeRequest(BaseModel):
+    branch: str = Field(..., description="Branch name to merge into current branch")
+    no_ff: bool = Field(default=False, description="Create merge commit even if fast-forward is possible")
+    message: Optional[str] = Field(default=None, description="Merge commit message")
 
 
 def _get_container_id(
@@ -155,6 +191,73 @@ def get_diff(
     return result
 
 
+@router.get("/{workspace_id}/diff/{file_path:path}")
+def get_file_diff(
+    workspace_id: str,
+    file_path: str,
+    staged: bool = Query(default=False, description="If true, shows diff of staged changes"),
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """
+    Get diff for a specific file.
+    """
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_get_file_diff(container_id, file_path, staged=staged)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to get file diff"))
+
+    return result
+
+
+@router.post("/{workspace_id}/stage")
+def stage_files(
+    workspace_id: str,
+    request: StageRequest,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """
+    Stage files. If files list is empty or None, stages all changes.
+    """
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_add(container_id, files=request.files)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to stage files"))
+
+    return result
+
+
+@router.post("/{workspace_id}/unstage")
+def unstage_files(
+    workspace_id: str,
+    request: UnstageRequest,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """
+    Unstage files. If files list is empty or None, unstages all staged files.
+    """
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_reset(container_id, files=request.files, mode="mixed")
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to unstage files"))
+
+    return result
+
+
 @router.post("/{workspace_id}/commit")
 def commit_changes(
     workspace_id: str,
@@ -215,7 +318,16 @@ def push_changes(
         if not set_result.get("success"):
             logger.warning(f"Failed to reset remote URL: {set_result.get('error')}, continuing anyway")
 
-    result = git_service.git_push(container_id, request.branch, token=token, force=request.force)
+    # Check if this is a new branch that needs upstream tracking
+    # If set_upstream is explicitly requested, use it
+    # Otherwise, check if branch exists on remote
+    needs_upstream = request.set_upstream
+    if not needs_upstream:
+        # Check if branch exists on remote
+        ls_remote_result = git_service.git_ls_remote(container_id, "origin", request.branch)
+        needs_upstream = not ls_remote_result.get("success") or not ls_remote_result.get("sha")
+    
+    result = git_service.git_push(container_id, request.branch, token=token, force=request.force, set_upstream=needs_upstream)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to push"))
 
@@ -363,3 +475,162 @@ def list_commits(
     except Exception as e:
         logger.error(f"Unexpected error getting commits for workspace {workspace_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get commits: {str(e)}")
+
+
+@router.get("/{workspace_id}/commits/graph")
+def get_commit_graph(
+    workspace_id: str,
+    max_count: int = Query(default=50, ge=1, le=200),
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """Get commit graph with parent relationships for visualization."""
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_log_graph(container_id, max_count=max_count)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to get commit graph"))
+    return result
+
+
+@router.get("/{workspace_id}/branches")
+def list_branches(
+    workspace_id: str,
+    include_remote: bool = Query(default=False),
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """List all branches."""
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_list_branches(container_id, include_remote=include_remote)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to list branches"))
+    return result
+
+
+@router.post("/{workspace_id}/branches")
+def create_branch(
+    workspace_id: str,
+    request: CreateBranchRequest,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """Create a new branch."""
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_create_branch(container_id, request.branch_name, request.start_point)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to create branch"))
+    return result
+
+
+@router.post("/{workspace_id}/branches/checkout")
+def checkout_branch(
+    workspace_id: str,
+    request: CheckoutBranchRequest,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """Switch to a branch."""
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_checkout_branch(container_id, request.branch_name, create=request.create)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to checkout branch"))
+    return result
+
+
+@router.delete("/{workspace_id}/branches/{branch_name}")
+def delete_branch(
+    workspace_id: str,
+    branch_name: str,
+    force: bool = Query(default=False),
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """Delete a branch."""
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_delete_branch(container_id, branch_name, force=force)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to delete branch"))
+    return result
+
+
+@router.get("/{workspace_id}/conflicts")
+def check_conflicts(
+    workspace_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """Check for merge conflicts."""
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_check_conflicts(container_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to check conflicts"))
+    return result
+
+
+@router.get("/{workspace_id}/conflicts/{file_path:path}")
+def get_conflict_content(
+    workspace_id: str,
+    file_path: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """Get conflict content for a file."""
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_get_conflict_content(container_id, file_path)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to get conflict content"))
+    return result
+
+
+@router.post("/{workspace_id}/conflicts/resolve")
+def resolve_conflict(
+    workspace_id: str,
+    request: ResolveConflictRequest,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """Resolve a conflict."""
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    if request.side == "both" and not request.content:
+        raise HTTPException(status_code=400, detail="Content is required for manual resolution")
+
+    # For manual resolution, write content first via file write API
+    # The content should be written before calling git_resolve_conflict
+    # This is handled by the frontend writing the file first
+
+    result = git_service.git_resolve_conflict(container_id, request.file_path, request.content or "", request.side)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to resolve conflict"))
+    return result

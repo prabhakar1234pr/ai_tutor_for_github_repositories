@@ -8,7 +8,7 @@ import logging
 from typing import Dict, List
 from app.agents.state import RoadmapAgentState, DayTheme, ConceptData
 from app.core.supabase_client import get_supabase_client
-from app.agents.day0 import get_day_0_content
+# Day 0 is handled separately via API endpoint, not imported here
 from app.utils.markdown_sanitizer import sanitize_markdown_content
 import httpx
 
@@ -23,32 +23,23 @@ except ImportError:
 
 def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Insert all day themes into roadmap_days table.
+    Insert all day themes into roadmap_days table (Days 1-N only).
+    Day 0 is handled separately via API endpoint (initialize-day0).
     Includes estimated_minutes for each day.
     """
     project_id = state["project_id"]
     curriculum = state.get("curriculum", [])
     target_days = state["target_days"]
     
-    logger.info(f"💾 Inserting {target_days} days into database...")
+    logger.info(f"💾 Inserting {len(curriculum)} days (Days 1-{target_days}) into database...")
+    logger.info(f"   Note: Day 0 is handled separately via API endpoint")
     
     supabase = get_supabase_client()
     
-    # Prepare all days to insert
+    # Prepare all days to insert (Days 1-N only, Day 0 excluded)
     days_to_insert = []
     
-    # Day 0 (fixed)
-    day0_theme, _ = get_day_0_content()
-    days_to_insert.append({
-        "project_id": project_id,
-        "day_number": 0,
-        "theme": day0_theme["theme"],
-        "description": day0_theme["description"],
-        "estimated_minutes": 30,  # Day 0 is quick
-        "generated_status": "pending",
-    })
-    
-    # Days 1 to target_days-1 (from curriculum)
+    # Days 1 to target_days (from curriculum)
     for theme in curriculum:
         days_to_insert.append({
             "project_id": project_id,
@@ -61,6 +52,11 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     
     # Insert all days
     try:
+        if not days_to_insert:
+            logger.warning("⚠️  No days to insert (curriculum is empty)")
+            state["day_ids_map"] = {}
+            return state
+        
         response = supabase.table("roadmap_days").insert(days_to_insert).execute()
         
         if not response.data:
@@ -73,11 +69,7 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
             day_id = day_data["day_id"]
             day_ids_map[day_number] = day_id
         
-        logger.info(f"✅ Inserted {len(response.data)} days into database")
-        
-        if 0 not in day_ids_map:
-            logger.error(f"❌ Day 0 not found in inserted days!")
-            raise ValueError("Day 0 was not inserted correctly")
+        logger.info(f"✅ Inserted {len(response.data)} days (Days 1-{target_days}) into database")
         
         state["day_ids_map"] = day_ids_map
         return state
@@ -88,111 +80,7 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
         return state
 
 
-def save_day0_content(state: RoadmapAgentState) -> RoadmapAgentState:
-    """
-    Save Day 0 content (concepts with content field, and tasks) to database.
-    No longer uses sub_concepts table.
-    """
-    project_id = state["project_id"]
-    day_ids_map = state.get("day_ids_map") or {}
-    day0_id = day_ids_map.get(0) if day_ids_map else None
-    
-    # Fallback: Query database if day_ids_map is missing
-    if not day0_id:
-        logger.warning("⚠️  Day 0 ID not found in state, querying database...")
-        supabase = get_supabase_client()
-        day_response = (
-            supabase.table("roadmap_days")
-            .select("day_id, day_number")
-            .eq("project_id", project_id)
-            .eq("day_number", 0)
-            .execute()
-        )
-        
-        if day_response.data and len(day_response.data) > 0:
-            day0_id = day_response.data[0]["day_id"]
-            logger.info(f"✅ Found Day 0 ID from database: {day0_id}")
-            if not state.get("day_ids_map"):
-                state["day_ids_map"] = {}
-            state["day_ids_map"][0] = day0_id
-        else:
-            logger.error(f"❌ Day 0 not found in database for project {project_id}")
-            raise ValueError("Day 0 ID not found. Did insert_all_days_to_db run?")
-    
-    logger.info(f"💾 Saving Day 0 content to database...")
-    
-    # Get Day 0 content
-    _, day0_concepts = get_day_0_content()
-    
-    supabase = get_supabase_client()
-    
-    try:
-        # Insert concepts with content field (sanitize markdown before saving)
-        concepts_to_insert = []
-        for concept in day0_concepts:
-            raw_content = concept.get("content", "")
-            sanitized_content = sanitize_markdown_content(raw_content)
-            concepts_to_insert.append({
-                "day_id": day0_id,
-                "order_index": concept["order_index"],
-                "title": concept["title"],
-                "description": concept["description"],
-                "content": sanitized_content,
-                "estimated_minutes": concept.get("estimated_minutes", 10),
-                "generated_status": "generated",
-            })
-        
-        concepts_response = supabase.table("concepts").insert(concepts_to_insert).execute()
-        
-        if not concepts_response.data:
-            raise ValueError("Failed to insert Day 0 concepts")
-        
-        logger.info(f"✅ Inserted {len(concepts_response.data)} concepts for Day 0")
-        
-        # Create mapping: order_index -> concept_id
-        concept_ids_map: Dict[int, str] = {}
-        for concept_data in concepts_response.data:
-            order_idx = concept_data["order_index"]
-            concept_id = concept_data["concept_id"]
-            concept_ids_map[order_idx] = concept_id
-        
-        # Insert tasks for each concept
-        for concept in day0_concepts:
-            concept_id = concept_ids_map[concept["order_index"]]
-            
-            if concept.get("tasks"):
-                tasks_to_insert = []
-                for task in concept["tasks"]:
-                    tasks_to_insert.append({
-                        "concept_id": concept_id,
-                        "order_index": task["order_index"],
-                        "title": task["title"],
-                        "description": task["description"],
-                        "task_type": task["task_type"],
-                        "estimated_minutes": task.get("estimated_minutes", 15),
-                        "difficulty": task.get("difficulty", "medium"),
-                        "hints": task.get("hints", []),
-                        "solution": task.get("solution"),
-                        "generated_status": "generated",
-                    })
-                
-                supabase.table("tasks").insert(tasks_to_insert).execute()
-                logger.debug(f"   Inserted {len(tasks_to_insert)} tasks for concept {concept['title']}")
-        
-        # Mark Day 0 as generated
-        supabase.table("roadmap_days").update({
-            "generated_status": "generated"
-        }).eq("day_id", day0_id).execute()
-        
-        logger.info(f"✅ Day 0 content saved successfully")
-        
-        return state
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to save Day 0 content: {e}", exc_info=True)
-        state["error"] = f"Failed to save Day 0 content: {str(e)}"
-        return state
-
+# Note: save_day0_content has been removed - Day 0 is now handled via API endpoint (initialize-day0)
 
 def save_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     """

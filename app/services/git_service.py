@@ -135,6 +135,85 @@ class GitService:
 
         return {"success": True, "diff": output}
 
+    def git_add(self, container_id: str, files: Optional[List[str]] = None) -> Dict[str, str]:
+        """
+        Stage files. If files is None or empty, stages all changes.
+        
+        Args:
+            container_id: Container ID
+            files: List of file paths to stage (relative to workspace root)
+                  If None or empty, stages all changes (git add -A)
+        
+        Returns:
+            Dict with success status and output
+        """
+        if files and len(files) > 0:
+            # Stage specific files
+            safe_files = [shlex.quote(f) for f in files]
+            cmd = f"git add {' '.join(safe_files)}"
+        else:
+            # Stage all changes
+            cmd = "git add -A"
+        
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+        
+        return {"success": True, "output": output}
+
+    def git_reset(self, container_id: str, files: Optional[List[str]] = None, mode: str = "mixed") -> Dict[str, str]:
+        """
+        Unstage files or reset changes.
+        
+        Args:
+            container_id: Container ID
+            files: List of file paths to unstage (relative to workspace root)
+                  If None or empty, unstages all staged files
+            mode: Reset mode - "mixed" (default, unstage), "hard" (discard changes)
+        
+        Returns:
+            Dict with success status and output
+        """
+        if files and len(files) > 0:
+            # Unstage specific files
+            safe_files = [shlex.quote(f) for f in files]
+            cmd = f"git reset --{mode} {' '.join(safe_files)}"
+        else:
+            # Unstage all files
+            cmd = f"git reset --{mode}"
+        
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+        
+        return {"success": True, "output": output}
+
+    def git_get_file_diff(self, container_id: str, file_path: str, staged: bool = False) -> Dict[str, str]:
+        """
+        Get diff for a specific file.
+        
+        Args:
+            container_id: Container ID
+            file_path: Path to file (relative to workspace root)
+            staged: If True, shows diff of staged changes. If False, shows diff of unstaged changes.
+        
+        Returns:
+            Dict with success status and diff output
+        """
+        safe_path = shlex.quote(file_path)
+        if staged:
+            # Show diff of staged changes
+            cmd = f"git diff --cached {safe_path}"
+        else:
+            # Show diff of unstaged changes
+            cmd = f"git diff {safe_path}"
+        
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+        
+        return {"success": True, "diff": output}
+
     def git_commit(
         self,
         container_id: str,
@@ -143,32 +222,35 @@ class GitService:
         author_email: Optional[str] = None,
     ) -> Dict[str, str]:
         """
-        Stage all changes and create a commit.
+        Create a commit with staged files only.
+        Note: Files must be staged separately using git_add() before committing.
         """
         if not message.strip():
             return {"success": False, "error": "Commit message is required"}
-
-        add_cmd = "git add -A"
-        exit_code, output = self._exec(container_id, add_cmd)
-        if exit_code != 0:
-            return {"success": False, "error": output}
 
         env_prefix = self._author_env(author_name, author_email)
         commit_cmd = f"{env_prefix}git commit -m {shlex.quote(message)}"
         exit_code, output = self._exec(container_id, commit_cmd)
         if exit_code != 0:
             if "nothing to commit" in output.lower():
-                return {"success": False, "error": "Nothing to commit"}
+                return {"success": False, "error": "Nothing to commit. Stage files first using git add."}
             logger.error(f"Git commit failed: {output}")
             return {"success": False, "error": output}
 
         sha = self.git_rev_parse(container_id, "HEAD")
         return {"success": True, "commit_sha": sha.get("sha"), "output": output}
 
-    def git_push(self, container_id: str, branch: str, token: Optional[str] = None, force: bool = False) -> Dict[str, str]:
+    def git_push(self, container_id: str, branch: str, token: Optional[str] = None, force: bool = False, set_upstream: bool = False) -> Dict[str, str]:
         """
         Push to remote using token if provided.
         Updates remote URL with token if needed, then pushes to origin.
+        
+        Args:
+            container_id: Container ID
+            branch: Branch name to push
+            token: GitHub token for authentication
+            force: Force push flag
+            set_upstream: Set upstream tracking (use -u flag). Useful for new branches.
         """
         branch = branch.strip() or "main"
         remote_url = self._get_remote_url(container_id)
@@ -187,11 +269,16 @@ class GitService:
             if verify_url:
                 logger.debug(f"Verified remote URL: {self._redact_token(verify_url)}")
 
-        flags = "--force" if force else ""
+        # Check if branch exists on remote to determine if we need upstream tracking
+        # For new branches, we need -u flag to set upstream tracking
+        upstream_flag = "-u" if set_upstream else ""
+        force_flag = "--force" if force else ""
+        flags = " ".join([f for f in [upstream_flag, force_flag] if f]).strip()
+        
         cmd = f"git push origin {shlex.quote(branch)} {flags}".strip()
         final_url = self._get_remote_url(container_id) or remote_url
         safe_url = self._redact_token(final_url)
-        logger.info(f"Pushing to remote: {safe_url} ({branch})")
+        logger.info(f"Pushing to remote: {safe_url} ({branch}) {'with upstream' if set_upstream else ''}")
 
         exit_code, output = self._exec(container_id, cmd)
         if exit_code != 0:
@@ -324,6 +411,215 @@ class GitService:
 
         return {"success": True, "commits": commits}
 
+    def git_log_graph(self, container_id: str, max_count: int = 50) -> Dict[str, object]:
+        """
+        Get commit graph with parent relationships for visualization.
+        """
+        format_spec = "%H%x7C%P%x7C%an%x7C%ae%x7C%ad%x7C%s%x7C%D"
+        cmd = (
+            f"git log --all --max-count={int(max_count)} "
+            f"--pretty=format:{format_spec} --date=iso --decorate"
+        ).strip()
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+
+        commits = []
+        branches = {}
+        for line in output.splitlines():
+            parts = line.split("|", 6)
+            if len(parts) < 6:
+                continue
+            
+            sha = parts[0]
+            parents = [p.strip() for p in parts[1].split() if p.strip()] if parts[1] else []
+            refs = parts[6] if len(parts) > 6 else ""
+            
+            # Parse branch/tag names from refs
+            branch_names = []
+            if refs:
+                # Extract branch names from refs like "HEAD -> main, origin/main, tag: v1.0"
+                import re
+                branch_matches = re.findall(r'(?:HEAD -> |origin/)?([^,]+)', refs)
+                branch_names = [b.strip() for b in branch_matches if b.strip() and not b.startswith('tag:')]
+            
+            commit_data = {
+                "sha": sha,
+                "parents": parents,
+                "author_name": parts[2],
+                "author_email": parts[3],
+                "date": parts[4],
+                "message": parts[5],
+                "branches": branch_names,
+            }
+            commits.append(commit_data)
+            
+            # Track branch heads
+            for branch in branch_names:
+                if branch not in branches or sha not in [c["sha"] for c in commits]:
+                    branches[branch] = sha
+
+        return {"success": True, "commits": commits, "branches": branches}
+
+    def git_list_branches(self, container_id: str, include_remote: bool = False) -> Dict[str, object]:
+        """
+        List all branches.
+        """
+        cmd = "git branch --list"
+        if include_remote:
+            cmd += " -a"
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+
+        branches = []
+        current = None
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("*"):
+                current = line[1:].strip()
+                branches.append({"name": current, "current": True})
+            else:
+                name = line.replace("remotes/", "").replace("origin/", "") if include_remote else line
+                if name not in [b["name"] for b in branches]:
+                    branches.append({"name": name, "current": False})
+
+        return {"success": True, "branches": branches, "current": current}
+
+    def git_create_branch(self, container_id: str, branch_name: str, start_point: Optional[str] = None) -> Dict[str, str]:
+        """
+        Create a new branch.
+        """
+        safe_name = shlex.quote(branch_name)
+        if start_point:
+            cmd = f"git branch {safe_name} {shlex.quote(start_point)}"
+        else:
+            cmd = f"git branch {safe_name}"
+        
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+        
+        return {"success": True, "output": output}
+
+    def git_checkout_branch(self, container_id: str, branch_name: str, create: bool = False) -> Dict[str, str]:
+        """
+        Switch to a branch.
+        """
+        safe_name = shlex.quote(branch_name)
+        if create:
+            cmd = f"git checkout -b {safe_name}"
+        else:
+            cmd = f"git checkout {safe_name}"
+        
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+        
+        return {"success": True, "output": output}
+
+    def git_delete_branch(self, container_id: str, branch_name: str, force: bool = False) -> Dict[str, str]:
+        """
+        Delete a branch.
+        Prevents deletion of the current branch.
+        """
+        # Check if this is the current branch
+        current_branch_result = self.git_current_branch(container_id)
+        current_branch = current_branch_result.get("branch") if current_branch_result.get("success") else None
+        
+        if current_branch == branch_name:
+            return {
+                "success": False, 
+                "error": f"Cannot delete the current branch '{branch_name}'. Please switch to another branch first."
+            }
+        
+        safe_name = shlex.quote(branch_name)
+        flags = "-D" if force else "-d"
+        cmd = f"git branch {flags} {safe_name}"
+        
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            # Provide more helpful error messages
+            error_msg = output.strip() if output else "Unknown error"
+            if "not found" in error_msg.lower():
+                return {"success": False, "error": f"Branch '{branch_name}' not found"}
+            elif "not fully merged" in error_msg.lower() and not force:
+                return {
+                    "success": False, 
+                    "error": f"Branch '{branch_name}' is not fully merged. Use force delete to delete it anyway."
+                }
+            return {"success": False, "error": error_msg}
+        
+        return {"success": True, "output": output}
+
+    def git_check_conflicts(self, container_id: str) -> Dict[str, object]:
+        """
+        Check for merge conflicts.
+        """
+        cmd = "git diff --check"
+        exit_code, output = self._exec(container_id, cmd)
+        
+        # Also check git status for conflict markers
+        status_cmd = "git status --porcelain=v1"
+        status_exit, status_output = self._exec(container_id, status_cmd)
+        
+        conflicts = []
+        if status_exit == 0:
+            for line in status_output.splitlines():
+                if len(line) >= 2:
+                    index_status = line[0]
+                    worktree_status = line[1]
+                    if index_status in {"U", "A", "D", "M"} and worktree_status in {"U", "A", "D", "M"}:
+                        file_path = line[3:].strip()
+                        conflicts.append(file_path)
+        
+        return {"success": True, "has_conflicts": len(conflicts) > 0, "conflicts": conflicts}
+
+    def git_get_conflict_content(self, container_id: str, file_path: str) -> Dict[str, str]:
+        """
+        Get conflict content for a file.
+        """
+        safe_path = shlex.quote(file_path)
+        cmd = f"cat {safe_path}"
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+        
+        return {"success": True, "content": output}
+
+    def git_resolve_conflict(self, container_id: str, file_path: str, content: str, side: str = "ours") -> Dict[str, str]:
+        """
+        Resolve a conflict by writing resolved content.
+        side: "ours", "theirs", or "both" (manual resolution)
+        """
+        safe_path = shlex.quote(file_path)
+        
+        if side == "ours":
+            cmd = f"git checkout --ours {safe_path}"
+            exit_code, output = self._exec(container_id, cmd)
+            if exit_code != 0:
+                return {"success": False, "error": output}
+        elif side == "theirs":
+            cmd = f"git checkout --theirs {safe_path}"
+            exit_code, output = self._exec(container_id, cmd)
+            if exit_code != 0:
+                return {"success": False, "error": output}
+        elif side == "both":
+            # Write the manually resolved content
+            # We'll need to write this to the file in the container
+            # For now, return error - this should be handled via file write API
+            return {"success": False, "error": "Manual resolution should be done via file write API"}
+        
+        # Stage the resolved file
+        add_cmd = f"git add {safe_path}"
+        exit_code, output = self._exec(container_id, add_cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
+        
+        return {"success": True, "output": output}
+
     def git_check_uncommitted(self, container_id: str) -> Dict[str, object]:
         """
         Check for uncommitted changes.
@@ -357,16 +653,6 @@ class GitService:
 
         sha = output.split()[0] if output.strip() else ""
         return {"success": True, "sha": sha}
-
-    def git_current_branch(self, container_id: str) -> Dict[str, str]:
-        """
-        Get current branch name.
-        """
-        cmd = "git rev-parse --abbrev-ref HEAD"
-        exit_code, output = self._exec(container_id, cmd)
-        if exit_code != 0:
-            return {"success": False, "error": output}
-        return {"success": True, "branch": output.strip()}
 
     def configure_git_user(self, container_id: str, name: str, email: str) -> Dict[str, str]:
         """

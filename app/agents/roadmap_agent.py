@@ -19,13 +19,11 @@ from app.agents.nodes.analyze_repo import analyze_repository
 from app.agents.nodes.plan_curriculum import plan_and_save_curriculum
 from app.agents.nodes.save_to_db import (
     insert_all_days_to_db,
-    save_day0_content,
     save_concepts_to_db,
     save_concept_content,
     mark_day_generated,
 )
 from app.agents.nodes.generate_content import (
-    generate_day0_content,
     select_next_incomplete_day,
     generate_concepts_for_day,
     generate_subconcepts_and_tasks,
@@ -86,17 +84,15 @@ def build_roadmap_graph() -> StateGraph:
     1. Fetch project context from database
     2. Analyze repository using RAG
     3. Plan curriculum (generate all day themes upfront)
-    4. Insert all days to database
-    5. Generate Day 0 (fixed content)
-    6. Save Day 0 to database
-    7. Loop: Generate Days 1-N
+    4. Insert all days to database (Days 1-N, Day 0 is handled separately via API)
+    5. Loop: Generate Days 1-N
        a. Select next incomplete day
        b. Generate concepts for day
        c. Save concepts to database
        d. Loop: Generate subconcepts + tasks for each concept
        e. Save concept content
        f. Mark day as generated
-    8. End when all days complete
+    6. End when all days complete
     
     Returns:
         Compiled StateGraph ready to run
@@ -114,11 +110,8 @@ def build_roadmap_graph() -> StateGraph:
     workflow.add_node("plan_curriculum", plan_and_save_curriculum)
     workflow.add_node("insert_all_days", insert_all_days_to_db)
     
-    # ===== DAY 0 GENERATION =====
-    workflow.add_node("generate_day0", generate_day0_content)
-    workflow.add_node("save_day0", save_day0_content)
-    
     # ===== CONTENT GENERATION LOOP =====
+    # Note: Day 0 is handled separately via API endpoint (initialize-day0)
     workflow.add_node("select_next_day", select_next_incomplete_day)
     workflow.add_node("generate_concepts", generate_concepts_for_day)
     workflow.add_node("save_concepts", save_concepts_to_db)
@@ -138,12 +131,11 @@ def build_roadmap_graph() -> StateGraph:
     workflow.add_edge("fetch_context", "analyze_repo")
     workflow.add_edge("analyze_repo", "plan_curriculum")
     workflow.add_edge("plan_curriculum", "insert_all_days")
-    workflow.add_edge("insert_all_days", "generate_day0")
-    workflow.add_edge("generate_day0", "save_day0")
     
-    # After Day 0, check if we need to generate more days
+    # After inserting all days, check if we need to generate content
+    # Note: Day 0 is handled separately via API endpoint
     workflow.add_conditional_edges(
-        "save_day0",
+        "insert_all_days",
         should_continue_generation,
         {
             "generate_content": "select_next_day",
@@ -303,9 +295,9 @@ async def run_roadmap_agent(
         graph = get_roadmap_graph()
         
         # Calculate recursion limit: 
-        # - Day 0: 1 iteration
-        # - Each day: 1 (select) + 1 (concepts) + N concepts (subconcepts/tasks) + 1 (mark complete)
-        # - For 14 days with ~4 concepts each: ~1 + 14 * (1 + 1 + 4 + 1) = ~99 iterations
+        # - Each day (Days 1-N): 1 (select) + 1 (concepts) + N concepts (subconcepts/tasks) + 1 (mark complete)
+        # - Day 0 is handled separately via API endpoint, not included here
+        # - For 14 days with ~4 concepts each: ~14 * (1 + 1 + 4 + 1) = ~98 iterations
         config = {"recursion_limit": calculate_recursion_limit(target_days)}
         
         # Run the graph (LangGraph handles async execution)

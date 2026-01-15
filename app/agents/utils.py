@@ -86,23 +86,22 @@ def calculate_recursion_limit(target_days: int, avg_concepts_per_day: int = 4) -
     Calculate recursion limit based on workflow structure.
     
     Structure:
-    - Day 0: 2 nodes (generate + save)
     - Each day: 1 (select) + 1 (concepts) + N concepts (subconcepts/tasks) + 1 (mark)
     - Recovery: 1 node
+    - Note: Day 0 is handled separately via API endpoint, not included here
     
     Args:
-        target_days: Number of days in the roadmap
+        target_days: Number of days in the roadmap (Days 1-N, Day 0 excluded)
         avg_concepts_per_day: Average number of concepts per day
         
     Returns:
         Calculated recursion limit with 50% buffer
     """
-    day0_nodes = 2  # generate_day0 + save_day0
     per_day_nodes = 1 + 1 + avg_concepts_per_day + 1  # select + concepts + content + mark
     recovery_nodes = 1
     
-    # Calculate base total
-    total = day0_nodes + (target_days * per_day_nodes) + recovery_nodes
+    # Calculate base total (only for Days 1-N, Day 0 is handled separately)
+    total = (target_days * per_day_nodes) + recovery_nodes
     
     # Add 50% buffer for retries, errors, and edge cases
     limit = int(total * 1.5)
