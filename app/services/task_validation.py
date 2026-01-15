@@ -93,6 +93,10 @@ async def validate_task_completion(
             if not validate_github_commit_url(url_or_sha):
                 return False, "Invalid commit URL or SHA format"
             return True, None
+
+        elif task_type == 'github_connect':
+            # Token + consent are validated in github_consent endpoint
+            return True, None
         
         elif task_type == 'coding':
             code = task_data.get('code', '').strip()

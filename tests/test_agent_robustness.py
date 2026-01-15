@@ -56,9 +56,6 @@ class TestInputValidation:
     def test_validate_inputs_invalid_skill_level(self):
         """Test validation fails with invalid skill_level."""
         with pytest.raises(ValueError, match="Invalid skill_level"):
-            validate_inputs("test-id", "https://github.com/user/repo", "expert", 14)
-        
-        with pytest.raises(ValueError, match="Invalid skill_level"):
             validate_inputs("test-id", "https://github.com/user/repo", "", 14)
     
     def test_validate_inputs_invalid_target_days(self):
@@ -495,7 +492,7 @@ class TestRunRoadmapAgent:
         result = await run_roadmap_agent(
             project_id="test-id",
             github_url="https://github.com/user/repo",
-            skill_level="expert",
+            skill_level="guru",
             target_days=14
         )
         

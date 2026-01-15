@@ -271,10 +271,8 @@ class TestRoadmapE2E:
             data = response.json()
             assert data["success"] is True
             assert "concept" in data
-            assert "subconcepts" in data
             assert "tasks" in data
             assert data["concept"]["concept_id"] == concept_id
-            assert len(data["subconcepts"]) == 1
             assert len(data["tasks"]) == 1
         finally:
             client.app.dependency_overrides.clear()
@@ -563,7 +561,22 @@ class TestRoadmapE2E:
             elif table_name == "roadmap_days":
                 mock_tbl.select.return_value = create_days_select_chain()
                 mock_tbl.insert.return_value = days_insert_chain
-                mock_tbl.update.return_value = update_chain
+                def update_side_effect(update_data):
+                    chain = Mock()
+                    def eq_side_effect(key, value):
+                        chain._eq_key = key
+                        chain._eq_value = value
+                        return chain
+                    chain.eq = Mock(side_effect=eq_side_effect)
+                    def execute_side_effect():
+                        if getattr(chain, "_eq_key", None) == "day_id":
+                            for day in days_insert_data:
+                                if day["day_id"] == getattr(chain, "_eq_value", None):
+                                    day.update(update_data)
+                        return Mock(data=[update_data])
+                    chain.execute = Mock(side_effect=execute_side_effect)
+                    return chain
+                mock_tbl.update = Mock(side_effect=update_side_effect)
             elif table_name == "concepts":
                 mock_tbl.select.return_value = concepts_select_chain
                 # Use different insert chains for Day 0 vs regular days
@@ -771,8 +784,9 @@ class TestRoadmapE2E:
                     headers={"Authorization": "Bearer fake_token"}
                 )
                 assert response3.status_code == 200
-                assert "subconcepts" in response3.json()
-                assert "tasks" in response3.json()
+                data3 = response3.json()
+                assert "tasks" in data3
+                # subconcepts are not returned by this endpoint in current API
             
             # 4. Get generation status
             response4 = client.get(

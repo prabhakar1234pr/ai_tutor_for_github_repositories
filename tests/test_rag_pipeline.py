@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, AsyncMock
 
 import pytest
 
@@ -43,7 +43,7 @@ async def test_generate_rag_response_happy_path(monkeypatch):
 
     # Mock groq response
     groq_service = Mock()
-    groq_service.generate_response.return_value = "final answer"
+    groq_service.generate_response_async = AsyncMock(return_value="final answer")
     monkeypatch.setattr(rag_pipeline, "get_groq_service", lambda: groq_service)
 
     result = await rag_pipeline.generate_rag_response(
@@ -57,7 +57,7 @@ async def test_generate_rag_response_happy_path(monkeypatch):
     assert len(result["chunks_used"]) == 1
     assert result["chunks_used"][0]["file_path"] == "a.py"
     qdrant_service.search.assert_called_once()
-    groq_service.generate_response.assert_called_once()
+    groq_service.generate_response_async.assert_called_once()
 
 
 @pytest.mark.asyncio

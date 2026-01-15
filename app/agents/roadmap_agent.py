@@ -4,9 +4,12 @@ This agent creates a structured learning curriculum based on a GitHub repository
 """
 
 import logging
+import time
 from typing import Literal
 from langgraph.graph import StateGraph, END
 from app.agents.state import RoadmapAgentState
+from app.agents.utils import validate_inputs, calculate_recursion_limit
+from app.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -239,8 +242,45 @@ async def run_roadmap_agent(
     logger.info(f"   GitHub URL: {github_url}")
     logger.info(f"   Skill Level: {skill_level}")
     logger.info(f"   Target Days: {target_days}")
-    
+    start_time = time.time()
+
     try:
+        # Validate inputs early to avoid unnecessary work
+        try:
+            validate_inputs(project_id, github_url, skill_level, target_days)
+        except ValueError as e:
+            return {
+                "success": False,
+                "project_id": project_id,
+                "error": f"Invalid input: {str(e)}",
+                "duration_seconds": max(0.0, time.time() - start_time),
+            }
+
+        # Ensure project exists before running workflow
+        try:
+            supabase = get_supabase_client()
+            project_response = (
+                supabase.table("Projects")
+                .select("project_id")
+                .eq("project_id", project_id)
+                .execute()
+            )
+            if not project_response.data:
+                return {
+                    "success": False,
+                    "project_id": project_id,
+                    "error": "Project not found",
+                    "duration_seconds": max(0.0, time.time() - start_time),
+                }
+        except Exception as e:
+            logger.error(f"Project check failed: {e}")
+            return {
+                "success": False,
+                "project_id": project_id,
+                "error": f"Project check failed: {str(e)}",
+                "duration_seconds": max(0.0, time.time() - start_time),
+            }
+
         # Initialize state
         initial_state: RoadmapAgentState = {
             "project_id": project_id,
@@ -266,8 +306,7 @@ async def run_roadmap_agent(
         # - Day 0: 1 iteration
         # - Each day: 1 (select) + 1 (concepts) + N concepts (subconcepts/tasks) + 1 (mark complete)
         # - For 14 days with ~4 concepts each: ~1 + 14 * (1 + 1 + 4 + 1) = ~99 iterations
-        # Set limit to 150 to be safe
-        config = {"recursion_limit": 150}
+        config = {"recursion_limit": calculate_recursion_limit(target_days)}
         
         # Run the graph (LangGraph handles async execution)
         final_state = await graph.ainvoke(initial_state, config=config)
@@ -278,6 +317,7 @@ async def run_roadmap_agent(
                 "success": False,
                 "project_id": project_id,
                 "error": final_state["error"],
+                "duration_seconds": max(0.0, time.time() - start_time),
             }
         
         logger.info(f"✅ Roadmap generation completed successfully for project_id={project_id}")
@@ -285,6 +325,7 @@ async def run_roadmap_agent(
             "success": True,
             "project_id": project_id,
             "error": None,
+            "duration_seconds": max(0.0, time.time() - start_time),
         }
         
     except Exception as e:
@@ -293,4 +334,5 @@ async def run_roadmap_agent(
             "success": False,
             "project_id": project_id,
             "error": str(e),
+            "duration_seconds": max(0.0, time.time() - start_time),
         }

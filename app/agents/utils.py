@@ -5,7 +5,7 @@ Includes validation, state management, and helper functions.
 
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from app.agents.state import RoadmapAgentState
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def validate_inputs(
     project_id: str,
     github_url: str,
     skill_level: str,
-    target_days: int,
+    target_days: Any,
 ) -> None:
     """
     Validate input parameters before starting the agent.

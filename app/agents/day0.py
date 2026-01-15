@@ -366,9 +366,17 @@ You now understand:
                 "difficulty": "easy"
             },
             {
-                "order_index": 2.5,
+                "order_index": 3,
+                "title": "Make Your First Commit",
+                "description": "Edit your repository's README.md file to personalize it. Add: 1) A project title, 2) A brief description of what you'll be learning, 3) Your name as the author. You can edit directly on GitHub (click the pencil icon) or clone locally and push. After committing, paste the commit URL (example: https://github.com/username/repo/commit/abc123).",
+                "task_type": "verify_commit",
+                "estimated_minutes": 10,
+                "difficulty": "easy"
+            },
+            {
+                "order_index": 4,
                 "title": "Connect GitHub Account & Accept Terms",
-                "description": "To enable code synchronization and accurate task verification, GitGuide needs access to your repository. Create a fine-grained Personal Access Token (PAT) scoped only to your repository. Step-by-step instructions: 1) Go to GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token, 2) Name your token (e.g., 'GitGuide Learning'), 3) Set expiration (90 days recommended), 4) Under 'Repository access', select 'Only select repositories' and choose the repository you created in Task 2, 5) Under 'Repository permissions', expand 'Contents' and select 'Read and write', 6) Click 'Generate token' and copy the token immediately (you won't see it again). Paste the token below and accept the terms to continue.",
+                "description": "To enable code synchronization and accurate task verification, GitGuide needs access to your repository. We'll also verify your token can read the latest commit and that it matches the commit you provided in Task 3. Create a fine-grained Personal Access Token (PAT) scoped only to your repository. Step-by-step instructions: 1) Go to GitHub Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token, 2) Name your token (e.g., 'GitGuide Learning'), 3) Set expiration (90 days recommended), 4) Under 'Repository access', select 'Only select repositories' and choose the repository you created in Task 2, 5) Under 'Repository permissions', expand 'Contents' and select 'Read and write', 6) Click 'Generate token' and copy the token immediately (you won't see it again). Paste the token below and accept the terms to continue.",
                 "task_type": "github_connect",
                 "estimated_minutes": 10,
                 "difficulty": "easy",
@@ -378,14 +386,6 @@ You now understand:
                     "Copy the token immediately after generation - GitHub only shows it once",
                     "If you lose the token, you'll need to generate a new one"
                 ]
-            },
-            {
-                "order_index": 3,
-                "title": "Make Your First Commit",
-                "description": "Edit your repository's README.md file to personalize it. Add: 1) A project title, 2) A brief description of what you'll be learning, 3) Your name as the author. You can edit directly on GitHub (click the pencil icon) or clone locally and push. After committing, paste the commit URL (example: https://github.com/username/repo/commit/abc123).",
-                "task_type": "verify_commit",
-                "estimated_minutes": 10,
-                "difficulty": "easy"
             }
         ]
     }

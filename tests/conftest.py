@@ -20,6 +20,36 @@ def reset_singletons(monkeypatch):
     monkeypatch.setattr(app.core.qdrant_client, "_qdrant_client", None)
 
 
+@pytest.fixture(autouse=True)
+def mock_groq_service_default(monkeypatch, request):
+    """Prevent real Groq API calls during tests."""
+    if "test_groq_service.py" in request.node.nodeid:
+        return
+
+    class DummyGroqService:
+        async def generate_response_async(self, user_query, system_prompt="", context=""):
+            system_prompt_lower = (system_prompt or "").lower()
+            if "json array" in system_prompt_lower:
+                return '[{"order_index": 1, "title": "Sample Item", "description": "Sample description"}]'
+            return (
+                '{"summary": "ok", "primary_language": "Python", "frameworks": [], '
+                '"architecture_patterns": [], "difficulty": "beginner", '
+                '"content": "Sample content", "estimated_minutes": 10}'
+            )
+
+        def generate_response(self, *args, **kwargs):
+            return "final answer"
+
+    dummy_service = DummyGroqService()
+
+    # Patch all modules that import get_groq_service directly
+    monkeypatch.setattr("app.services.groq_service.get_groq_service", lambda: dummy_service)
+    monkeypatch.setattr("app.agents.nodes.analyze_repo.get_groq_service", lambda: dummy_service)
+    monkeypatch.setattr("app.agents.nodes.plan_curriculum.get_groq_service", lambda: dummy_service)
+    monkeypatch.setattr("app.agents.nodes.generate_content.get_groq_service", lambda: dummy_service)
+    monkeypatch.setattr("app.services.rag_pipeline.get_groq_service", lambda: dummy_service)
+
+
 @pytest.fixture
 def client():
     """FastAPI test client with dependency overrides"""

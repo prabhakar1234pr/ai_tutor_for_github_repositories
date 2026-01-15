@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from app.core.supabase_client import get_supabase_client
 from app.services.docker_client import get_docker_client, DockerClient
+from app.services.git_service import GitService
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +301,83 @@ class WorkspaceManager:
 
         logger.info(f"Workspace destroyed: {workspace_id}")
         return True
+
+    def initialize_git_repo(
+        self,
+        workspace_id: str,
+        user_id: str,
+        author_name: str,
+        author_email: str
+    ) -> dict:
+        """
+        Clone and configure the user's repository in the workspace.
+        Returns status info for API responses.
+        """
+        workspace = self.get_workspace(workspace_id)
+        if not workspace:
+            return {"success": False, "error": "Workspace not found"}
+        if workspace.user_id != user_id:
+            return {"success": False, "error": "Access denied"}
+        if not workspace.container_id:
+            return {"success": False, "error": "Workspace has no container"}
+        if workspace.container_status != "running":
+            return {"success": False, "error": f"Container not running ({workspace.container_status})"}
+
+        project_response = (
+            self.supabase.table("Projects")
+            .select("project_id, user_repo_url, github_access_token")
+            .eq("project_id", workspace.project_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not project_response.data:
+            return {"success": False, "error": "Project not found"}
+
+        project = project_response.data[0]
+        repo_url = project.get("user_repo_url")
+        token = project.get("github_access_token")
+        if not repo_url or not token:
+            return {"success": False, "error": "Repository URL or GitHub token missing"}
+
+        git_service = GitService()
+        clone_result = git_service.clone_repository(workspace.container_id, repo_url, token=token)
+        if clone_result.get("status") == "error":
+            return {"success": False, "error": clone_result.get("message", "Clone failed")}
+
+        config_result = git_service.configure_git_user(workspace.container_id, author_name, author_email)
+        if not config_result.get("success"):
+            return {"success": False, "error": config_result.get("error", "Failed to configure git user")}
+
+        branch_result = git_service.git_current_branch(workspace.container_id)
+        branch = branch_result.get("branch") if branch_result.get("success") else "main"
+        rev_result = git_service.git_rev_parse(workspace.container_id, "HEAD")
+        last_commit = rev_result.get("sha") if rev_result.get("success") else None
+
+        workspace_row = (
+            self.supabase.table(self.table_name)
+            .select("last_platform_commit")
+            .eq("workspace_id", workspace_id)
+            .execute()
+        )
+        existing_last_commit = None
+        if workspace_row.data:
+            existing_last_commit = workspace_row.data[0].get("last_platform_commit")
+
+        update_data = {
+            "git_remote_url": repo_url,
+            "current_branch": branch,
+        }
+        if last_commit and not existing_last_commit:
+            update_data["last_platform_commit"] = last_commit
+
+        self.supabase.table(self.table_name).update(update_data).eq("workspace_id", workspace_id).execute()
+
+        return {
+            "success": True,
+            "status": clone_result.get("status"),
+            "branch": branch,
+            "last_platform_commit": last_commit,
+        }
 
     def get_workspace_status(self, workspace_id: str) -> Optional[str]:
         """

@@ -25,10 +25,17 @@ class GitHubConsentRequest(BaseModel):
     project_id: str = Field(..., description="Project ID")
 
 
+class GitHubConsentCheck(BaseModel):
+    label: str
+    passed: bool
+    detail: str | None = None
+
+
 class GitHubConsentResponse(BaseModel):
     success: bool
     message: str
     github_username: str
+    checks: list[GitHubConsentCheck]
 
 
 async def validate_github_token(token: str) -> dict:
@@ -128,6 +135,54 @@ async def verify_token_has_repo_access(token: str, repo_url: str) -> bool:
         return False
 
 
+async def verify_repo_permissions_and_commit_access(token: str, repo_url: str) -> tuple[bool, bool, str | None]:
+    """
+    Verify that the token can read the latest commit and has push permissions.
+    """
+    try:
+        import re
+        match = re.search(r'github\.com/([^/]+)/([^/]+)', repo_url)
+        if not match:
+            return False, False, None
+
+        owner = match.group(1)
+        repo = match.group(2).replace('.git', '')
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            repo_response = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+            )
+            if repo_response.status_code != 200:
+                return False, False, None
+
+            repo_data = repo_response.json()
+            permissions = repo_data.get("permissions", {})
+            can_push = bool(permissions.get("push"))
+
+            commits_response = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=1",
+                headers={
+                    "Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json"
+                }
+            )
+            if commits_response.status_code != 200:
+                return False, can_push, None
+
+            commits = commits_response.json()
+            latest_sha = commits[0].get("sha") if isinstance(commits, list) and commits else None
+            can_read_commit = latest_sha is not None
+
+            return can_read_commit, can_push, latest_sha
+    except Exception as e:
+        logger.error(f"Error verifying repo permissions/commits: {e}")
+        return False, False, None
+
+
 @router.post("/consent", response_model=GitHubConsentResponse)
 async def store_github_consent(
     request: GitHubConsentRequest,
@@ -153,7 +208,7 @@ async def store_github_consent(
             supabase,
             clerk_user_id,
             request.project_id,
-            select_fields="project_id, github_username, user_repo_url"
+            select_fields="project_id, github_username, user_repo_url, user_repo_first_commit"
         )
         
         logger.info(f"Storing GitHub consent for project {request.project_id}, user {user_id}")
@@ -200,6 +255,36 @@ async def store_github_consent(
                 detail=f"Token does not have access to repository: {user_repo_url}. "
                        "Ensure your PAT is scoped to this repository with 'Contents' read/write permissions."
             )
+
+        can_read_commit, can_push, latest_commit_sha = await verify_repo_permissions_and_commit_access(
+            request.token,
+            user_repo_url
+        )
+        if not can_read_commit:
+            raise HTTPException(
+                status_code=403,
+                detail="Token cannot read commits for the repository. "
+                       "Ensure your PAT has at least 'Contents: read' permission."
+            )
+        if not can_push:
+            raise HTTPException(
+                status_code=403,
+                detail="Token does not have push (write) permission for the repository. "
+                       "Ensure your PAT has 'Contents: read and write' permission."
+            )
+
+        stored_commit_sha = project_data.get("user_repo_first_commit")
+        if not stored_commit_sha:
+            raise HTTPException(
+                status_code=400,
+                detail="Commit SHA not found. Please complete Task 3 (Make Your First Commit) first."
+            )
+        if not latest_commit_sha or latest_commit_sha.lower() != stored_commit_sha.lower():
+            raise HTTPException(
+                status_code=403,
+                detail="Latest repository commit does not match the commit you verified in Task 3. "
+                       "Please ensure your most recent commit is the one you submitted."
+            )
         
         # Validate consent
         if not request.consent_accepted:
@@ -237,10 +322,41 @@ async def store_github_consent(
             f"username: {stored_username} (validated against PAT token)"
         )
         
+        checks = [
+            GitHubConsentCheck(label="Token validated", passed=True, detail="PAT verified"),
+            GitHubConsentCheck(
+                label="Username matches Task 1",
+                passed=True,
+                detail=f"@{github_username_from_token}"
+            ),
+            GitHubConsentCheck(
+                label="Repository access verified",
+                passed=True,
+                detail=user_repo_url
+            ),
+            GitHubConsentCheck(
+                label="Commit read access",
+                passed=True,
+                detail="Latest commit readable"
+            ),
+            GitHubConsentCheck(
+                label="Latest commit matches Task 3",
+                passed=True,
+                detail=latest_commit_sha[:7] if latest_commit_sha else None
+            ),
+            GitHubConsentCheck(
+                label="Push permission",
+                passed=True,
+                detail="Contents: read and write"
+            ),
+            GitHubConsentCheck(label="Consent recorded", passed=True, detail="Terms accepted"),
+        ]
+
         return GitHubConsentResponse(
             success=True,
             message="GitHub account connected successfully",
-            github_username=stored_username
+            github_username=stored_username,
+            checks=checks
         )
         
     except HTTPException:

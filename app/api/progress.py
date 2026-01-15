@@ -10,7 +10,7 @@ from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
 from supabase import Client
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ async def get_progress(
                     "user_id": user_id,
                     "day_id": day0_id,
                     "progress_status": "todo",
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 }, on_conflict="user_id,day_id").execute()
                 
                 # Refresh day_progress
@@ -203,7 +203,7 @@ async def start_concept(
         if not day_response.data or day_response.data[0]["project_id"] != project_id:
             raise HTTPException(status_code=404, detail="Concept not found in project")
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Upsert progress with started_at timestamp
         supabase.table("user_concept_progress").upsert({
@@ -243,7 +243,7 @@ async def complete_concept(
         
         user_id = user_response.data[0]["id"]
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Upsert progress with completed_at timestamp
         supabase.table("user_concept_progress").upsert({
@@ -303,7 +303,7 @@ async def mark_content_read(
         if not day_response.data or day_response.data[0]["project_id"] != project_id:
             raise HTTPException(status_code=404, detail="Concept not found in project")
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Check if progress record already exists
         existing = supabase.table("user_concept_progress").select("progress_status").eq("user_id", user_id).eq("concept_id", concept_id).execute()
@@ -353,7 +353,7 @@ async def start_day(
         
         user_id = user_response.data[0]["id"]
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Upsert progress with started_at timestamp
         supabase.table("user_day_progress").upsert({
@@ -393,7 +393,7 @@ async def complete_day(
         
         user_id = user_response.data[0]["id"]
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Mark day as done with completed_at timestamp
         supabase.table("user_day_progress").upsert({
@@ -476,7 +476,7 @@ async def complete_task(
         if not day_response.data or day_response.data[0]["project_id"] != project_id:
             raise HTTPException(status_code=404, detail="Task not found in project")
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Check if progress record exists
         existing_response = supabase.table("user_task_progress").select("id, started_at").eq("user_id", user_id).eq("task_id", task_id).execute()
@@ -547,7 +547,7 @@ async def start_task(
         
         user_id = user_response.data[0]["id"]
         
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         
         # Check if progress record exists
         existing_response = supabase.table("user_task_progress").select("id").eq("user_id", user_id).eq("task_id", task_id).execute()
@@ -620,7 +620,7 @@ async def _check_and_complete_concept_if_ready(supabase: Client, user_id: str, c
             logger.info(f"✅ Concept {concept_id} has no tasks, auto-completing")
         
         if should_complete:
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             supabase.table("user_concept_progress").upsert({
                 "user_id": user_id,
                 "concept_id": concept_id,
@@ -664,7 +664,7 @@ async def _check_and_complete_day_if_ready(supabase: Client, user_id: str, day_i
         if all_concepts_done:
             logger.info(f"✅ All concepts completed for day {day_id}, auto-completing day")
             
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             
             # Mark day as done
             supabase.table("user_day_progress").upsert({

@@ -19,29 +19,32 @@ def test_groq_service_sends_model_and_messages(monkeypatch):
     captured = {}
 
     class FakeResponse:
+        status_code = 200
+        text = ""
+
         def raise_for_status(self):
             return None
 
         def json(self):
             return {"choices": [{"message": {"content": "ok"}}]}
 
-    class FakeClient:
+    class FakeAsyncClient:
         def __init__(self, timeout):
             self.timeout = timeout
 
-        def __enter__(self):
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, exc_type, exc, tb):
+        async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def post(self, url, json, headers):
+        async def post(self, url, json, headers):
             captured["url"] = url
             captured["json"] = json
             captured["headers"] = headers
             return FakeResponse()
 
-    monkeypatch.setattr(groq_service_module.httpx, "Client", FakeClient)
+    monkeypatch.setattr(groq_service_module.httpx, "AsyncClient", FakeAsyncClient)
 
     svc = GroqService()
     out = svc.generate_response(

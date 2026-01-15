@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class CreateProjectRequest(BaseModel):
     github_url: str = Field(..., description="GitHub repository URL")
-    skill_level: Literal["beginner", "intermediate", "expert"] = Field(..., description="User's skill level")
+    skill_level: Literal["beginner", "intermediate", "advanced"] = Field(..., description="User's skill level")
     target_days: int = Field(..., ge=7, le=30, description="Target duration in days (7-30)")
     
     @field_validator('github_url')
