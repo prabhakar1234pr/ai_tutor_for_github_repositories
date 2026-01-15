@@ -6,10 +6,12 @@ Real-time terminal connections for Docker containers.
 import json
 import asyncio
 import logging
+import time
 from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends
 from pydantic import BaseModel
 from supabase import Client
+import docker
 
 from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token, verify_clerk_token_from_string
@@ -70,6 +72,20 @@ async def create_terminal_session(
 
         if not workspace.container_id:
             raise HTTPException(status_code=400, detail="Workspace has no container")
+
+        # Check if container is running, start it if not
+        if workspace.container_status != "running":
+            logger.info(f"Container {workspace.container_id[:12]} is not running (status: {workspace.container_status}), starting...")
+            success = workspace_manager.start_workspace(request.workspace_id)
+            if not success:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Failed to start workspace container (status: {workspace.container_status})"
+                )
+            # Refresh workspace to get updated status
+            workspace = workspace_manager.get_workspace(request.workspace_id)
+            if not workspace or workspace.container_status != "running":
+                raise HTTPException(status_code=500, detail="Container failed to start")
 
         # Create terminal session
         terminal_service = get_terminal_service()
@@ -232,6 +248,52 @@ async def terminal_websocket(
         await websocket.send_json({"type": "error", "message": "Workspace has no container"})
         await websocket.close(code=4000, reason="Workspace has no container")
         return
+
+    # Check actual Docker container status (not just database)
+    logger.info(f"[TERMINAL_WS] Checking container status for {workspace.container_id[:12]}")
+    try:
+        docker_client = docker.from_env()
+        container = docker_client.containers.get(workspace.container_id)
+        actual_status = container.status
+        logger.info(f"[TERMINAL_WS] Container {workspace.container_id[:12]} status: {actual_status}")
+        
+        # If container is not running, start it
+        if actual_status != "running":
+            logger.warning(f"[TERMINAL_WS] Container {workspace.container_id[:12]} is not running (actual status: {actual_status}), starting...")
+            success = workspace_manager.start_workspace(workspace_id)
+            logger.info(f"[TERMINAL_WS] Start workspace result: {success}")
+            if not success:
+                await websocket.send_json({
+                    "type": "error", 
+                    "message": f"Failed to start workspace container (status: {actual_status})"
+                })
+                await websocket.close(code=4005, reason="Failed to start container")
+                return
+            # Wait a moment for container to start, then verify
+            await asyncio.sleep(0.5)  # Use async sleep instead of blocking sleep
+            container.reload()
+            logger.info(f"[TERMINAL_WS] Container status after start: {container.status}")
+            if container.status != "running":
+                await websocket.send_json({"type": "error", "message": "Container failed to start"})
+                await websocket.close(code=4005, reason="Container failed to start")
+                return
+        else:
+            logger.info(f"[TERMINAL_WS] Container {workspace.container_id[:12]} is running, proceeding...")
+    except docker.errors.NotFound:
+        logger.warning(f"[TERMINAL_WS] Container {workspace.container_id[:12]} not found in Docker, recreating...")
+        success = workspace_manager.start_workspace(workspace_id)
+        if not success:
+            await websocket.send_json({"type": "error", "message": "Failed to recreate container"})
+            await websocket.close(code=4005, reason="Failed to recreate container")
+            return
+    except Exception as e:
+        logger.error(f"[TERMINAL_WS] Error checking container status: {e}", exc_info=True)
+        # Try to start anyway
+        success = workspace_manager.start_workspace(workspace_id)
+        if not success:
+            await websocket.send_json({"type": "error", "message": f"Container check failed: {str(e)}"})
+            await websocket.close(code=4005, reason="Container check failed")
+            return
 
     terminal_service = get_terminal_service()
     session: Optional[TerminalSession] = None

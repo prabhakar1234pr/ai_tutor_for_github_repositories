@@ -130,9 +130,8 @@ class ExternalCommitService:
             if not push_result.get("success"):
                 return {"success": False, "error": push_result.get("error")}
 
-        now = datetime.now(timezone.utc).isoformat()
         self.supabase.table("workspaces").update(
-            {"last_platform_commit": last_platform_commit, "updated_at": now}
+            {"last_platform_commit": last_platform_commit}
         ).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
 
         return {

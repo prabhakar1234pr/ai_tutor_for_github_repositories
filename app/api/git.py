@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from supabase import Client
 import logging
 from typing import Optional
+import re
 
 from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
@@ -82,6 +83,40 @@ def _get_project_token(supabase: Client, project_id: str, user_id: str) -> Optio
     return response.data[0].get("github_access_token")
 
 
+def _get_project_repo_url(supabase: Client, project_id: str, user_id: str) -> Optional[str]:
+    response = (
+        supabase.table("Projects")
+        .select("user_repo_url, github_url")
+        .eq("project_id", project_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not response.data:
+        return None
+    project = response.data[0]
+    return project.get("user_repo_url") or project.get("github_url")
+
+
+def _normalize_repo_url(url: str) -> str:
+    """
+    Normalize repo URL by stripping all auth and normalizing format.
+    Handles URLs with multiple @ signs.
+    """
+    cleaned = url.strip()
+    # Strip all auth patterns (handles multiple @ signs)
+    # Extract protocol and domain/path, removing everything between protocol and domain
+    match = re.match(r"(https?://)(?:[^@]+@)+([^/]+(?:/.*)?)", cleaned)
+    if match:
+        cleaned = match.group(1) + match.group(2)
+    else:
+        # Fallback: simple strip of first auth pattern
+        cleaned = re.sub(r"^(https?://)[^@]+@", r"\1", cleaned)
+    # Remove .git suffix
+    cleaned = cleaned[:-4] if cleaned.endswith(".git") else cleaned
+    # Remove trailing slash
+    return cleaned.rstrip("/")
+
+
 @router.get("/{workspace_id}/status")
 def get_status(
     workspace_id: str,
@@ -137,7 +172,12 @@ def commit_changes(
 
     result = git_service.git_commit(container_id, request.message, author_name, author_email)
     if not result.get("success"):
-        raise HTTPException(status_code=500, detail=result.get("error", "Failed to commit"))
+        error_msg = result.get("error", "Failed to commit")
+        if "nothing to commit" in error_msg.lower():
+            logger.info(f"Nothing to commit for workspace {workspace_id}")
+            raise HTTPException(status_code=400, detail="Nothing to commit - no changes detected")
+        logger.error(f"Commit failed for workspace {workspace_id}: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
 
     return result
 
@@ -163,9 +203,30 @@ def push_changes(
         raise HTTPException(status_code=400, detail="GitHub token not configured for this project")
 
     git_service = GitService()
+    repo_url = _get_project_repo_url(supabase, workspace.project_id, user_id)
+    if repo_url:
+        # Always reset to clean repo URL from database (without auth) before pushing
+        # This ensures we start from a known good state
+        clean_repo_url = _normalize_repo_url(repo_url)
+        # Ensure it's a full URL (add https:// if missing)
+        if not clean_repo_url.startswith(("http://", "https://")):
+            clean_repo_url = f"https://{clean_repo_url}"
+        set_result = git_service.git_set_remote_url(container_id, clean_repo_url)
+        if not set_result.get("success"):
+            logger.warning(f"Failed to reset remote URL: {set_result.get('error')}, continuing anyway")
+
     result = git_service.git_push(container_id, request.branch, token=token, force=request.force)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to push"))
+
+    # Update last_platform_commit after successful push
+    # This ensures commits made through the platform are tracked correctly
+    head_result = git_service.git_rev_parse(container_id, "HEAD")
+    if head_result.get("success") and head_result.get("sha"):
+        supabase.table("workspaces").update({
+            "last_platform_commit": head_result.get("sha")
+        }).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
+        logger.info(f"Updated last_platform_commit to {head_result.get('sha')[:7]} for workspace {workspace_id}")
 
     return result
 
@@ -191,6 +252,17 @@ def pull_changes(
         raise HTTPException(status_code=400, detail="GitHub token not configured for this project")
 
     git_service = GitService()
+    repo_url = _get_project_repo_url(supabase, workspace.project_id, user_id)
+    if repo_url:
+        current_remote = git_service.git_get_remote_url(container_id)
+        if current_remote.get("success"):
+            current = _normalize_repo_url(current_remote.get("url", ""))
+            desired = _normalize_repo_url(repo_url)
+            if current and desired and current != desired:
+                set_result = git_service.git_set_remote_url(container_id, repo_url)
+                if not set_result.get("success"):
+                    raise HTTPException(status_code=500, detail=set_result.get("error", "Failed to update remote"))
+
     uncommitted = git_service.git_check_uncommitted(container_id)
     if not uncommitted.get("success"):
         raise HTTPException(status_code=500, detail=uncommitted.get("error", "Failed to check changes"))

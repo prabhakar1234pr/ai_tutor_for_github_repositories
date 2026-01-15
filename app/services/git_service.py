@@ -157,6 +157,9 @@ class GitService:
         commit_cmd = f"{env_prefix}git commit -m {shlex.quote(message)}"
         exit_code, output = self._exec(container_id, commit_cmd)
         if exit_code != 0:
+            if "nothing to commit" in output.lower():
+                return {"success": False, "error": "Nothing to commit"}
+            logger.error(f"Git commit failed: {output}")
             return {"success": False, "error": output}
 
         sha = self.git_rev_parse(container_id, "HEAD")
@@ -165,21 +168,34 @@ class GitService:
     def git_push(self, container_id: str, branch: str, token: Optional[str] = None, force: bool = False) -> Dict[str, str]:
         """
         Push to remote using token if provided.
+        Updates remote URL with token if needed, then pushes to origin.
         """
         branch = branch.strip() or "main"
         remote_url = self._get_remote_url(container_id)
         if not remote_url:
             return {"success": False, "error": "Remote 'origin' not found"}
 
-        auth_url = self._inject_token(remote_url, token) if token else remote_url
-        safe_auth_url = self._redact_token(auth_url)
+        # Update remote URL with token if provided
+        if token:
+            auth_url = self._inject_token(remote_url, token)
+            logger.debug(f"Updating remote URL from: {self._redact_token(remote_url)} to: {self._redact_token(auth_url)}")
+            set_result = self.git_set_remote_url(container_id, auth_url)
+            if not set_result.get("success"):
+                return {"success": False, "error": f"Failed to update remote URL: {set_result.get('error')}"}
+            # Verify the URL was set correctly
+            verify_url = self._get_remote_url(container_id)
+            if verify_url:
+                logger.debug(f"Verified remote URL: {self._redact_token(verify_url)}")
 
         flags = "--force" if force else ""
-        cmd = f"git push {shlex.quote(auth_url)} {shlex.quote(branch)} {flags}".strip()
-        logger.info(f"Pushing to remote: {safe_auth_url} ({branch})")
+        cmd = f"git push origin {shlex.quote(branch)} {flags}".strip()
+        final_url = self._get_remote_url(container_id) or remote_url
+        safe_url = self._redact_token(final_url)
+        logger.info(f"Pushing to remote: {safe_url} ({branch})")
 
         exit_code, output = self._exec(container_id, cmd)
         if exit_code != 0:
+            logger.error(f"Git push failed: {output}")
             return {"success": False, "error": output}
 
         return {"success": True, "output": output}
@@ -187,22 +203,51 @@ class GitService:
     def git_pull(self, container_id: str, branch: str, token: Optional[str] = None) -> Dict[str, str]:
         """
         Pull from remote using token if provided.
+        Updates remote URL with token if needed, then pulls from origin.
         """
         branch = branch.strip() or "main"
         remote_url = self._get_remote_url(container_id)
         if not remote_url:
             return {"success": False, "error": "Remote 'origin' not found"}
 
-        auth_url = self._inject_token(remote_url, token) if token else remote_url
-        safe_auth_url = self._redact_token(auth_url)
+        # Update remote URL with token if provided
+        if token:
+            auth_url = self._inject_token(remote_url, token)
+            set_result = self.git_set_remote_url(container_id, auth_url)
+            if not set_result.get("success"):
+                return {"success": False, "error": f"Failed to update remote URL: {set_result.get('error')}"}
 
-        cmd = f"git pull {shlex.quote(auth_url)} {shlex.quote(branch)}"
-        logger.info(f"Pulling from remote: {safe_auth_url} ({branch})")
+        cmd = f"git pull origin {shlex.quote(branch)}"
+        safe_url = self._redact_token(remote_url)
+        logger.info(f"Pulling from remote: {safe_url} ({branch})")
 
         exit_code, output = self._exec(container_id, cmd)
         if exit_code != 0:
+            logger.error(f"Git pull failed: {output}")
             return {"success": False, "error": output}
 
+        return {"success": True, "output": output}
+
+    def git_get_remote_url(self, container_id: str) -> Dict[str, str]:
+        """
+        Get remote origin URL.
+        """
+        exit_code, output = self._exec(container_id, "git remote get-url origin")
+        if exit_code != 0:
+            return {"success": False, "error": output}
+        return {"success": True, "url": output.strip()}
+
+    def git_set_remote_url(self, container_id: str, remote_url: str) -> Dict[str, str]:
+        """
+        Set remote origin URL.
+        Removes trailing slashes as git doesn't like them.
+        """
+        # Remove trailing slash - git remote URLs shouldn't have them
+        clean_url = remote_url.strip().rstrip("/")
+        cmd = f"git remote set-url origin {shlex.quote(clean_url)}"
+        exit_code, output = self._exec(container_id, cmd)
+        if exit_code != 0:
+            return {"success": False, "error": output}
         return {"success": True, "output": output}
 
     def git_stash(self, container_id: str, message: Optional[str] = None) -> Dict[str, str]:
@@ -361,13 +406,42 @@ class GitService:
     def _inject_token(repo_url: str, token: str) -> str:
         """
         Inject token into HTTPS URL for auth.
+        First strips any existing auth from the URL (handles multiple @ signs).
         """
         token = token.strip()
+        # Extract protocol
         if repo_url.startswith("https://"):
-            return repo_url.replace("https://", f"https://x-access-token:{token}@")
-        if repo_url.startswith("http://"):
-            return repo_url.replace("http://", f"http://x-access-token:{token}@")
-        return repo_url
+            protocol = "https://"
+            rest = repo_url[8:]  # Remove "https://"
+        elif repo_url.startswith("http://"):
+            protocol = "http://"
+            rest = repo_url[7:]  # Remove "http://"
+        else:
+            return repo_url
+        
+        # Find where the actual domain starts (after the last @ before the first /)
+        # Example: old@x-access-token:old@github.com/path -> github.com/path
+        if "/" in rest:
+            # Find the last @ before the first /
+            domain_and_auth, path = rest.split("/", 1)
+            # Extract domain (everything after the last @)
+            if "@" in domain_and_auth:
+                domain = domain_and_auth.split("@")[-1]
+            else:
+                domain = domain_and_auth
+            full_path = "/" + path
+        else:
+            # No path, just domain and auth
+            if "@" in rest:
+                domain = rest.split("@")[-1]
+            else:
+                domain = rest
+            full_path = ""
+        
+        # Remove trailing slash from path (git doesn't like it)
+        full_path = full_path.rstrip("/")
+        # Don't URL-encode the token - GitHub tokens are designed to be used as-is in URLs
+        return f"{protocol}x-access-token:{token}@{domain}{full_path}"
 
     @staticmethod
     def _redact_token(repo_url: str) -> str:
