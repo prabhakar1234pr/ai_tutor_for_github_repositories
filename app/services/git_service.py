@@ -78,6 +78,7 @@ class GitService:
         modified: List[str] = []
         staged: List[str] = []
         untracked: List[str] = []
+        deleted: List[str] = []
         conflicts: List[str] = []
 
         if lines and lines[0].startswith("##"):
@@ -96,13 +97,33 @@ class GitService:
             worktree_status = line[1]
             path = line[3:].strip()
 
+            # Handle conflicts first
             if index_status in {"U", "A", "D", "M", "R", "C"} and worktree_status in {"U", "A", "D", "M"}:
                 conflicts.append(path)
                 continue
 
-            if index_status != " ":
+            # Track deleted files separately
+            # " D" = deleted in working tree (unstaged deletion)
+            # "D " = deleted in index (staged deletion)
+            # "DD" = deleted in both (conflict - already handled above)
+            is_deleted = False
+            if worktree_status == "D" and index_status == " ":
+                # Deleted in working tree, not staged
+                deleted.append(path)
+                modified.append(path)  # Also add to modified for backward compatibility
+                is_deleted = True
+            elif index_status == "D" and worktree_status == " ":
+                # Deleted in index (staged)
+                deleted.append(path)
                 staged.append(path)
-            if worktree_status != " ":
+                is_deleted = True
+
+            # Track staged changes (non-deleted files)
+            if not is_deleted and index_status != " ":
+                staged.append(path)
+
+            # Track modified changes (non-deleted files)
+            if not is_deleted and worktree_status != " ":
                 modified.append(path)
 
         return {
@@ -113,6 +134,7 @@ class GitService:
             "modified": sorted(set(modified)),
             "staged": sorted(set(staged)),
             "untracked": sorted(set(untracked)),
+            "deleted": sorted(set(deleted)),
             "conflicts": sorted(set(conflicts)),
             "raw": output,
         }
@@ -379,11 +401,23 @@ class GitService:
             return {"success": False, "error": output}
         return {"success": True, "branch": output.strip()}
 
-    def git_log(self, container_id: str, range_spec: Optional[str] = None, max_count: int = 50) -> Dict[str, object]:
+    def git_log(self, container_id: str, range_spec: Optional[str] = None, max_count: int = 50, show_all: bool = False) -> Dict[str, object]:
         """
         Get commit list for a range.
+        
+        Args:
+            container_id: Container ID
+            range_spec: Git range spec (e.g., "HEAD~5..HEAD" or "main..feature")
+            max_count: Maximum number of commits
+            show_all: If True, show all branches. If False and no range_spec, show only HEAD history.
         """
-        range_part = shlex.quote(range_spec) if range_spec else ""
+        if range_spec:
+            range_part = shlex.quote(range_spec)
+        elif show_all:
+            range_part = "--all"
+        else:
+            range_part = "HEAD"  # Default to current branch history only
+        
         format_spec = "%H%x7C%an%x7C%ae%x7C%ad%x7C%s"
         cmd = (
             "git log "
@@ -411,13 +445,20 @@ class GitService:
 
         return {"success": True, "commits": commits}
 
-    def git_log_graph(self, container_id: str, max_count: int = 50) -> Dict[str, object]:
+    def git_log_graph(self, container_id: str, max_count: int = 50, show_all: bool = False) -> Dict[str, object]:
         """
         Get commit graph with parent relationships for visualization.
+        
+        Args:
+            container_id: Container ID
+            max_count: Maximum number of commits to return
+            show_all: If True, show all branches (including remote). If False, only show commits reachable from HEAD.
         """
         format_spec = "%H%x7C%P%x7C%an%x7C%ae%x7C%ad%x7C%s%x7C%D"
+        # Use --all only if show_all is True, otherwise just show HEAD (current branch and its history)
+        all_flag = "--all" if show_all else "HEAD"
         cmd = (
-            f"git log --all --max-count={int(max_count)} "
+            f"git log {all_flag} --max-count={int(max_count)} "
             f"--pretty=format:{format_spec} --date=iso --decorate"
         ).strip()
         exit_code, output = self._exec(container_id, cmd)
@@ -520,10 +561,17 @@ class GitService:
         
         return {"success": True, "output": output}
 
-    def git_delete_branch(self, container_id: str, branch_name: str, force: bool = False) -> Dict[str, str]:
+    def git_delete_branch(self, container_id: str, branch_name: str, force: bool = False, token: Optional[str] = None, delete_remote: bool = True) -> Dict[str, str]:
         """
-        Delete a branch.
+        Delete a branch (local and optionally remote).
         Prevents deletion of the current branch.
+        
+        Args:
+            container_id: Container ID
+            branch_name: Branch name to delete
+            force: Force delete (use -D instead of -d)
+            token: GitHub token for deleting remote branch
+            delete_remote: If True, also delete the remote branch (default: True)
         """
         # Check if this is the current branch
         current_branch_result = self.git_current_branch(container_id)
@@ -550,9 +598,38 @@ class GitService:
                     "success": False, 
                     "error": f"Branch '{branch_name}' is not fully merged. Use force delete to delete it anyway."
                 }
-            return {"success": False, "error": error_msg}
         
-        return {"success": True, "output": output}
+        # Delete remote branch if requested and token is provided
+        remote_deleted = False
+        if delete_remote and token:
+            remote_url = self._get_remote_url(container_id)
+            if remote_url:
+                # Update remote URL with token
+                auth_url = self._inject_token(remote_url, token)
+                set_result = self.git_set_remote_url(container_id, auth_url)
+                if set_result.get("success"):
+                    # Check if remote branch exists
+                    check_cmd = f"git ls-remote --heads origin {safe_name}"
+                    check_exit, check_output = self._exec(container_id, check_cmd)
+                    if check_exit == 0 and check_output.strip():
+                        # Remote branch exists, delete it
+                        delete_remote_cmd = f"git push origin --delete {safe_name}"
+                        remote_exit, remote_output = self._exec(container_id, delete_remote_cmd)
+                        if remote_exit == 0:
+                            remote_deleted = True
+                            logger.info(f"Deleted remote branch '{branch_name}'")
+                        else:
+                            logger.warning(f"Failed to delete remote branch '{branch_name}': {remote_output}")
+                    else:
+                        logger.info(f"Remote branch '{branch_name}' does not exist, skipping remote deletion")
+                else:
+                    logger.warning(f"Failed to update remote URL for branch deletion: {set_result.get('error')}")
+        
+        return {
+            "success": True,
+            "output": output,
+            "remote_deleted": remote_deleted
+        }
 
     def git_check_conflicts(self, container_id: str) -> Dict[str, object]:
         """
@@ -666,6 +743,143 @@ class GitService:
         if exit_code != 0:
             return {"success": False, "error": output}
 
+        return {"success": True, "output": output}
+
+    def git_merge(
+        self,
+        container_id: str,
+        branch: str,
+        no_ff: bool = False,
+        message: Optional[str] = None,
+        author_name: Optional[str] = None,
+        author_email: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """
+        Merge a branch into the current branch.
+        
+        Args:
+            container_id: Container ID
+            branch: Branch name to merge into current branch
+            no_ff: Create merge commit even if fast-forward is possible
+            message: Merge commit message (optional)
+            author_name: Author name for merge commit (optional)
+            author_email: Author email for merge commit (optional)
+        
+        Returns:
+            Dict with success status, output, and conflict information
+        """
+        branch = branch.strip()
+        if not branch:
+            return {"success": False, "error": "Branch name is required"}
+        
+        # Check if branch exists
+        branch_check = self.git_list_branches(container_id, include_remote=False)
+        if not branch_check.get("success"):
+            return {"success": False, "error": "Failed to list branches"}
+        
+        branch_names = [b.get("name") for b in branch_check.get("branches", [])]
+        if branch not in branch_names:
+            return {"success": False, "error": f"Branch '{branch}' not found"}
+        
+        # Check for uncommitted changes
+        uncommitted = self.git_check_uncommitted(container_id)
+        if not uncommitted.get("success"):
+            return {"success": False, "error": "Failed to check uncommitted changes"}
+        
+        if uncommitted.get("has_changes"):
+            return {
+                "success": False,
+                "error": "You have uncommitted changes. Please commit or stash them before merging.",
+                "has_conflicts": False,
+            }
+        
+        # Build merge command
+        flags = []
+        if no_ff:
+            flags.append("--no-ff")
+        else:
+            flags.append("--ff")  # Allow fast-forward
+        
+        if message:
+            flags.append(f"-m {shlex.quote(message)}")
+        
+        merge_cmd = f"git merge {' '.join(flags)} {shlex.quote(branch)}"
+        
+        # Set author if provided
+        if author_name and author_email:
+            env_prefix = self._author_env(author_name, author_email)
+            merge_cmd = f"{env_prefix}{merge_cmd}"
+        
+        exit_code, output = self._exec(container_id, merge_cmd)
+        
+        # Check for conflicts
+        if exit_code != 0:
+            # Check if it's a conflict
+            conflicts_result = self.git_check_conflicts(container_id)
+            has_conflicts = conflicts_result.get("has_conflicts", False) if conflicts_result.get("success") else False
+            
+            if has_conflicts:
+                return {
+                    "success": False,
+                    "error": "Merge conflicts detected",
+                    "has_conflicts": True,
+                    "conflicts": conflicts_result.get("conflicts", []),
+                    "output": output,
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": output or "Merge failed",
+                    "has_conflicts": False,
+                }
+        
+        # Check for conflicts even if exit code is 0 (sometimes git returns 0 but has conflicts)
+        conflicts_result = self.git_check_conflicts(container_id)
+        has_conflicts = conflicts_result.get("has_conflicts", False) if conflicts_result.get("success") else False
+        
+        if has_conflicts:
+            return {
+                "success": False,
+                "error": "Merge conflicts detected",
+                "has_conflicts": True,
+                "conflicts": conflicts_result.get("conflicts", []),
+                "output": output,
+            }
+        
+        return {
+            "success": True,
+            "output": output,
+            "has_conflicts": False,
+        }
+
+    def git_abort_merge(self, container_id: str) -> Dict[str, str]:
+        """
+        Abort an ongoing merge.
+        
+        Args:
+            container_id: Container ID
+        
+        Returns:
+            Dict with success status and output
+        """
+        # Check if there's an ongoing merge
+        status_result = self.git_status(container_id)
+        if not status_result.get("success"):
+            return {"success": False, "error": "Failed to check git status"}
+        
+        conflicts = status_result.get("conflicts", [])
+        if not conflicts:
+            # Check if we're in a merge state
+            exit_code, output = self._exec(container_id, "git rev-parse -q --verify MERGE_HEAD")
+            if exit_code != 0:
+                return {"success": False, "error": "No merge in progress"}
+        
+        cmd = "git merge --abort"
+        exit_code, output = self._exec(container_id, cmd)
+        
+        if exit_code != 0:
+            return {"success": False, "error": output or "Failed to abort merge"}
+        
         return {"success": True, "output": output}
 
     def _exec(self, container_id: str, command: str) -> Tuple[int, str]:

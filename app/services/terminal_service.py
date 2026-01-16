@@ -6,6 +6,7 @@ Manages PTY sessions for interactive terminal access in Docker containers.
 import asyncio
 import uuid
 import logging
+import re
 from typing import Optional, Dict, Callable, Any
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from docker.errors import NotFound, APIError
 
 from app.core.supabase_client import get_supabase_client
 from app.services.docker_client import get_docker_client
+from app.services.git_service import GitService
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +42,16 @@ class TerminalService:
     def __init__(self):
         self.supabase = get_supabase_client()
         self.docker_client = get_docker_client()
+        self.git_service = GitService()
         self.table_name = "terminal_sessions"
         # Active exec streams: session_id -> (socket, exec_id)
         self._active_streams: Dict[str, Any] = {}
+        # Output buffers for commit detection: session_id -> buffer_string
+        self._output_buffers: Dict[str, str] = {}
+        # Maximum buffer size per session (keep last 10KB of output)
+        self._max_buffer_size = 10240
+        # Track last processed commit SHA per session to avoid duplicate updates
+        self._last_processed_commits: Dict[str, str] = {}
 
     def _row_to_session(self, row: dict) -> TerminalSession:
         """Convert database row to TerminalSession object."""
@@ -269,6 +278,8 @@ class TerminalService:
                     
                     if data:
                         logger.debug(f"Terminal output for {session_id}: {len(data)} bytes")
+                        # Check for commits in terminal output
+                        self._check_for_commit(session_id, data)
                         on_output(data)
                     else:
                         # No data, small sleep to prevent busy loop
@@ -406,6 +417,9 @@ class TerminalService:
             del self._active_streams[session_id]
         else:
             logger.debug(f"[CLOSE_SESSION] Session not in active streams: {session_id}")
+        
+        # Clean up output buffer
+        self._cleanup_session_buffer(session_id)
 
         # Update database
         self.supabase.table(self.table_name).update(
@@ -431,8 +445,141 @@ class TerminalService:
             "session_id", session_id
         ).execute()
 
+        # Clean up output buffer
+        self._cleanup_session_buffer(session_id)
+
         logger.info(f"Terminal session deleted: {session_id}")
         return True
+
+    def _check_for_commit(self, session_id: str, output_data: bytes) -> None:
+        """
+        Check terminal output for git commit commands and update last_platform_commit.
+        
+        Args:
+            session_id: Terminal session ID
+            output_data: Raw terminal output bytes
+        """
+        try:
+            # Get session to find workspace_id and container_id
+            session = self.get_session(session_id)
+            if not session:
+                return
+            
+            # Decode output and add to buffer
+            try:
+                output_text = output_data.decode("utf-8", errors="replace")
+            except Exception:
+                return
+            
+            # Update buffer for this session
+            if session_id not in self._output_buffers:
+                self._output_buffers[session_id] = ""
+            
+            buffer = self._output_buffers[session_id] + output_text
+            # Keep buffer size manageable
+            if len(buffer) > self._max_buffer_size:
+                buffer = buffer[-self._max_buffer_size:]
+            self._output_buffers[session_id] = buffer
+            
+            # Check for commit success patterns
+            # Pattern 1: Git prompt format "[branch_name commit_sha]" - e.g., "[main abc1234]"
+            # Pattern 2: "commit abc1234" or "commit abc1234 (HEAD -> main)" from git log/show
+            # Pattern 3: "Created commit abc1234" from git commit output
+            # Pattern 4: "[main abc1234]" at end of line (git prompt)
+            commit_patterns = [
+                (r'\[([^\]]+)\s+([a-f0-9]{7,40})\]\s*$', True),  # [branch sha] at end of line (git prompt)
+                (r'\[([^\]]+)\s+([a-f0-9]{7,40})\]', False),  # [branch sha] anywhere
+                (r'commit\s+([a-f0-9]{7,40})\s*(?:\(HEAD|$)', True),  # commit sha followed by HEAD or end
+                (r'Created\s+commit\s+([a-f0-9]{7,40})', True),  # Created commit sha
+            ]
+            
+            for pattern, require_end in commit_patterns:
+                matches = re.findall(pattern, buffer, re.IGNORECASE | re.MULTILINE)
+                if matches:
+                    # Get the most recent match
+                    if isinstance(matches[-1], tuple):
+                        commit_sha = matches[-1][-1]  # Last element of tuple
+                    else:
+                        commit_sha = matches[-1]
+                    
+                    # Validate SHA format (should be 7-40 hex characters)
+                    if not re.match(r'^[a-f0-9]{7,40}$', commit_sha, re.IGNORECASE):
+                        continue
+                    
+                    # Check if we've already processed this commit
+                    if session_id in self._last_processed_commits:
+                        if self._last_processed_commits[session_id] == commit_sha:
+                            continue  # Already processed this commit
+                    
+                    # Mark as processed
+                    self._last_processed_commits[session_id] = commit_sha
+                    
+                    # Schedule update with a small delay to ensure commit is complete
+                    asyncio.create_task(
+                        self._update_last_platform_commit_delayed(session.workspace_id, session_id)
+                    )
+                    logger.info(f"Detected commit {commit_sha[:7]} in terminal output for workspace {session.workspace_id}, will update last_platform_commit")
+                    break
+                    
+        except Exception as e:
+            logger.debug(f"Error checking for commit in terminal output: {e}")
+
+    async def _update_last_platform_commit_delayed(self, workspace_id: str, session_id: str) -> None:
+        """
+        Wait a short delay then update last_platform_commit to ensure commit is complete.
+        """
+        # Wait 500ms to ensure the commit is fully written
+        await asyncio.sleep(0.5)
+        await self._update_last_platform_commit(workspace_id, session_id)
+
+    async def _update_last_platform_commit(self, workspace_id: str, session_id: str) -> None:
+        """
+        Update last_platform_commit in database after detecting a commit in terminal.
+        
+        Args:
+            workspace_id: Workspace UUID
+            session_id: Terminal session ID
+        """
+        try:
+            # Get workspace to find container_id
+            from app.services.workspace_manager import get_workspace_manager
+            workspace_manager = get_workspace_manager()
+            workspace = workspace_manager.get_workspace(workspace_id)
+            
+            if not workspace or not workspace.container_id:
+                logger.warning(f"Cannot update last_platform_commit: workspace or container not found")
+                return
+            
+            # Get current HEAD commit SHA
+            rev_result = self.git_service.git_rev_parse(workspace.container_id, "HEAD")
+            if not rev_result.get("success"):
+                logger.warning(f"Failed to get HEAD commit SHA: {rev_result.get('error')}")
+                return
+            
+            commit_sha = rev_result.get("sha")
+            if not commit_sha:
+                logger.warning("No commit SHA returned from git rev-parse")
+                return
+            
+            # Get user_id from workspace
+            user_id = workspace.user_id
+            
+            # Update last_platform_commit in database
+            self.supabase.table("workspaces").update({
+                "last_platform_commit": commit_sha
+            }).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
+            
+            logger.info(f"Updated last_platform_commit to {commit_sha[:7]} for workspace {workspace_id} (detected from terminal)")
+            
+        except Exception as e:
+            logger.error(f"Failed to update last_platform_commit for workspace {workspace_id}: {e}", exc_info=True)
+
+    def _cleanup_session_buffer(self, session_id: str) -> None:
+        """Clean up output buffer when session is closed."""
+        if session_id in self._output_buffers:
+            del self._output_buffers[session_id]
+        if session_id in self._last_processed_commits:
+            del self._last_processed_commits[session_id]
 
 
 # Singleton instance

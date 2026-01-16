@@ -9,6 +9,7 @@ from supabase import Client
 import logging
 from typing import Optional, List
 import re
+import shlex
 
 from app.core.supabase_client import get_supabase_client
 from app.utils.clerk_auth import verify_clerk_token
@@ -78,6 +79,11 @@ class MergeRequest(BaseModel):
     branch: str = Field(..., description="Branch name to merge into current branch")
     no_ff: bool = Field(default=False, description="Create merge commit even if fast-forward is possible")
     message: Optional[str] = Field(default=None, description="Merge commit message")
+
+
+class ResetToCommitRequest(BaseModel):
+    commit: str = Field(..., description="Commit SHA to reset to")
+    hard: bool = Field(default=True, description="Hard reset (discard all changes) or soft reset")
 
 
 def _get_container_id(
@@ -456,16 +462,21 @@ def list_commits(
     workspace_id: str,
     range_spec: Optional[str] = Query(default=None),
     max_count: int = Query(default=50, ge=1, le=200),
+    show_all: bool = Query(default=False, description="Show all branches including remote, or only HEAD history"),
     user_info: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_supabase_client),
     workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
 ):
+    """
+    List commits. By default, only shows commits reachable from HEAD.
+    Set show_all=True to see all branches including remote branches.
+    """
     try:
         user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
         container_id = _get_container_id(workspace_id, user_id, workspace_manager)
         git_service = GitService()
 
-        result = git_service.git_log(container_id, range_spec=range_spec, max_count=max_count)
+        result = git_service.git_log(container_id, range_spec=range_spec, max_count=max_count, show_all=show_all)
         if not result.get("success"):
             logger.error(f"Failed to get commits for workspace {workspace_id}: {result.get('error')}")
             raise HTTPException(status_code=500, detail=result.get("error", "Failed to get commits"))
@@ -481,16 +492,21 @@ def list_commits(
 def get_commit_graph(
     workspace_id: str,
     max_count: int = Query(default=50, ge=1, le=200),
+    show_all: bool = Query(default=False, description="Show all branches including remote, or only HEAD history"),
     user_info: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_supabase_client),
     workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
 ):
-    """Get commit graph with parent relationships for visualization."""
+    """
+    Get commit graph with parent relationships for visualization.
+    By default, only shows commits reachable from HEAD (current branch history).
+    Set show_all=True to see all branches including remote branches.
+    """
     user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
     container_id = _get_container_id(workspace_id, user_id, workspace_manager)
     git_service = GitService()
 
-    result = git_service.git_log_graph(container_id, max_count=max_count)
+    result = git_service.git_log_graph(container_id, max_count=max_count, show_all=show_all)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to get commit graph"))
     return result
@@ -553,7 +569,7 @@ def checkout_branch(
     return result
 
 
-@router.delete("/{workspace_id}/branches/{branch_name}")
+@router.delete("/{workspace_id}/branches/{branch_name:path}")
 def delete_branch(
     workspace_id: str,
     branch_name: str,
@@ -562,12 +578,25 @@ def delete_branch(
     supabase: Client = Depends(get_supabase_client),
     workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
 ):
-    """Delete a branch."""
+    """Delete a branch (local and remote). Supports branch names with slashes (e.g., feature/hi)."""
     user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    workspace = workspace_manager.get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if workspace.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
+    
     container_id = _get_container_id(workspace_id, user_id, workspace_manager)
     git_service = GitService()
 
-    result = git_service.git_delete_branch(container_id, branch_name, force=force)
+    # URL decode the branch name in case it was double-encoded
+    from urllib.parse import unquote
+    branch_name = unquote(branch_name)
+
+    # Get GitHub token for remote branch deletion
+    token = _get_project_token(supabase, workspace.project_id, user_id)
+
+    result = git_service.git_delete_branch(container_id, branch_name, force=force, token=token, delete_remote=True)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to delete branch"))
     return result
@@ -633,4 +662,127 @@ def resolve_conflict(
     result = git_service.git_resolve_conflict(container_id, request.file_path, request.content or "", request.side)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to resolve conflict"))
+    return result
+
+
+@router.post("/{workspace_id}/merge")
+def merge_branch(
+    workspace_id: str,
+    request: MergeRequest,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """
+    Merge a branch into the current branch.
+    """
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    author_name = user_info.get("name") or "GitGuide"
+    author_email = user_info.get("email") or "noreply@gitguide.local"
+
+    result = git_service.git_merge(
+        container_id,
+        request.branch,
+        no_ff=request.no_ff,
+        message=request.message,
+        author_name=author_name,
+        author_email=author_email,
+    )
+
+    if not result.get("success"):
+        # Check if it's a conflict
+        if result.get("has_conflicts"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": result.get("error", "Merge conflicts detected"),
+                    "conflicts": result.get("conflicts", []),
+                },
+            )
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to merge"))
+
+    # Update last_platform_commit after successful merge
+    # This ensures merge commits made through the platform are tracked correctly
+    # Wrap in try-except to ensure merge success is returned even if update fails
+    try:
+        head_result = git_service.git_rev_parse(container_id, "HEAD")
+        if head_result.get("success") and head_result.get("sha"):
+            supabase.table("workspaces").update({
+                "last_platform_commit": head_result.get("sha")
+            }).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
+            logger.info(f"Updated last_platform_commit to {head_result.get('sha')[:7]} for workspace {workspace_id} after merge")
+    except Exception as e:
+        logger.warning(f"Failed to update last_platform_commit for workspace {workspace_id} after merge: {e}")
+        # Don't fail the merge if database update fails
+
+    return result
+
+
+@router.post("/{workspace_id}/merge/abort")
+def abort_merge(
+    workspace_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """
+    Abort an ongoing merge.
+    """
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    result = git_service.git_abort_merge(container_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to abort merge"))
+
+    return result
+
+
+@router.post("/{workspace_id}/reset")
+def reset_to_commit(
+    workspace_id: str,
+    request: ResetToCommitRequest,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+    workspace_manager: WorkspaceManager = Depends(get_workspace_manager),
+):
+    """
+    Reset HEAD to a specific commit.
+    """
+    user_id = get_user_id_from_clerk(supabase, user_info["clerk_user_id"])
+    container_id = _get_container_id(workspace_id, user_id, workspace_manager)
+    git_service = GitService()
+
+    # Validate commit SHA format (basic check)
+    if not re.match(r'^[a-fA-F0-9]{7,40}$', request.commit):
+        raise HTTPException(status_code=400, detail="Invalid commit SHA format")
+
+    if request.hard:
+        result = git_service.git_reset_hard(container_id, request.commit)
+    else:
+        # Soft reset - keep changes in staging area
+        # Use git reset --soft to move HEAD without touching index or working tree
+        cmd = f"git reset --soft {shlex.quote(request.commit)}"
+        exit_code, output = git_service._exec(container_id, cmd)
+        if exit_code != 0:
+            result = {"success": False, "error": output}
+        else:
+            result = {"success": True, "output": output}
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to reset to commit"))
+
+    # Update last_platform_commit if reset was successful
+    try:
+        supabase.table("workspaces").update({
+            "last_platform_commit": request.commit
+        }).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
+        logger.info(f"Updated last_platform_commit to {request.commit[:7]} for workspace {workspace_id} after reset")
+    except Exception as e:
+        logger.warning(f"Failed to update last_platform_commit for workspace {workspace_id} after reset: {e}")
+
     return result
