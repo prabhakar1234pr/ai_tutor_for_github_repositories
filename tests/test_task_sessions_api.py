@@ -2,8 +2,6 @@
 Tests for Task Sessions API endpoints.
 """
 
-from unittest.mock import Mock
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -66,7 +64,10 @@ def test_complete_task_session_success(task_sessions_client, monkeypatch):
             return {"success": True, "session": {"session_id": session_id, "user_id": "user_1"}}
 
         def complete_task_session(self, session_id, current_commit=None):
-            return {"success": True, "session": {"session_id": session_id, "current_commit": current_commit}}
+            return {
+                "success": True,
+                "session": {"session_id": session_id, "current_commit": current_commit},
+            }
 
     monkeypatch.setattr("app.api.task_sessions.TaskSessionService", DummyTaskSessionService)
 

@@ -1,11 +1,6 @@
-from unittest.mock import Mock
-
-import pytest
-
-
 def test_groq_service_sends_model_and_messages(monkeypatch):
-    from app.services.groq_service import GroqService
     import app.services.groq_service as groq_service_module
+    from app.services.groq_service import GroqService
 
     # Ensure settings has an API key so GroqService can init
     monkeypatch.setattr(groq_service_module.settings, "groq_api_key", "test-key", raising=False)
@@ -58,5 +53,3 @@ def test_groq_service_sends_model_and_messages(monkeypatch):
     assert captured["json"]["model"] == groq_service_module.settings.groq_model
     assert captured["json"]["messages"][0]["role"] == "system"
     assert captured["headers"]["Authorization"].startswith("Bearer ")
-
-

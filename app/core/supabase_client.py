@@ -1,11 +1,13 @@
-from supabase import create_client, Client
-from app.config import settings
 import logging
 
+from supabase import Client, create_client
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_supabase_client : Client | None = None
+_supabase_client: Client | None = None
+
 
 def get_supabase_client() -> Client:
     """create and return the Supabase client instance"""
@@ -17,7 +19,5 @@ def get_supabase_client() -> Client:
 
         _supabase_client = create_client(settings.supabase_url, settings.supabase_service_key)
         logger.info("Supabase client initialized successfully")
-    
+
     return _supabase_client
-
-

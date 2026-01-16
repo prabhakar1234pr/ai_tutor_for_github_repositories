@@ -3,21 +3,20 @@ Terminal WebSocket API
 Real-time terminal connections for Docker containers.
 """
 
-import json
 import asyncio
+import json
 import logging
-import time
-from typing import Optional
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, HTTPException, Depends
+
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from supabase import Client
-import docker
 
+import docker
 from app.core.supabase_client import get_supabase_client
+from app.services.terminal_service import TerminalSession, get_terminal_service
+from app.services.workspace_manager import get_workspace_manager
 from app.utils.clerk_auth import verify_clerk_token, verify_clerk_token_from_string
 from app.utils.db_helpers import get_user_id_from_clerk
-from app.services.workspace_manager import get_workspace_manager
-from app.services.terminal_service import get_terminal_service, TerminalSession
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -75,12 +74,14 @@ async def create_terminal_session(
 
         # Check if container is running, start it if not
         if workspace.container_status != "running":
-            logger.info(f"Container {workspace.container_id[:12]} is not running (status: {workspace.container_status}), starting...")
+            logger.info(
+                f"Container {workspace.container_id[:12]} is not running (status: {workspace.container_status}), starting..."
+            )
             success = workspace_manager.start_workspace(request.workspace_id)
             if not success:
                 raise HTTPException(
-                    status_code=400, 
-                    detail=f"Failed to start workspace container (status: {workspace.container_status})"
+                    status_code=400,
+                    detail=f"Failed to start workspace container (status: {workspace.container_status})",
                 )
             # Refresh workspace to get updated status
             workspace = workspace_manager.get_workspace(request.workspace_id)
@@ -103,10 +104,10 @@ async def create_terminal_session(
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error creating terminal session: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get("/sessions/{workspace_id}")
@@ -144,7 +145,7 @@ async def list_terminal_sessions(
         raise
     except Exception as e:
         logger.error(f"Error listing terminal sessions: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.delete("/sessions/{session_id}")
@@ -184,7 +185,7 @@ async def delete_terminal_session(
         raise
     except Exception as e:
         logger.error(f"Error deleting terminal session: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.websocket("/{workspace_id}/connect")
@@ -192,7 +193,7 @@ async def terminal_websocket(
     websocket: WebSocket,
     workspace_id: str,
     token: str = Query(...),
-    session_id: Optional[str] = Query(None),
+    session_id: str | None = Query(None),
 ):
     """
     WebSocket endpoint for terminal connections.
@@ -211,14 +212,16 @@ async def terminal_websocket(
             {"type": "error", "message": "..."}  - Error message
             {"type": "connected", "session_id": "..."}  - Connection established
     """
-    logger.info(f"[WS_CONNECT] New WebSocket connection for workspace: {workspace_id}, session: {session_id}")
-    
+    logger.info(
+        f"[WS_CONNECT] New WebSocket connection for workspace: {workspace_id}, session: {session_id}"
+    )
+
     # Accept connection first (required before sending any messages or closing)
     await websocket.accept()
     logger.debug(f"[WS_CONNECT] WebSocket accepted for workspace: {workspace_id}")
-    
+
     supabase = get_supabase_client()
-    
+
     # Authenticate
     try:
         user_info = await verify_clerk_token_from_string(token)
@@ -255,18 +258,24 @@ async def terminal_websocket(
         docker_client = docker.from_env()
         container = docker_client.containers.get(workspace.container_id)
         actual_status = container.status
-        logger.info(f"[TERMINAL_WS] Container {workspace.container_id[:12]} status: {actual_status}")
-        
+        logger.info(
+            f"[TERMINAL_WS] Container {workspace.container_id[:12]} status: {actual_status}"
+        )
+
         # If container is not running, start it
         if actual_status != "running":
-            logger.warning(f"[TERMINAL_WS] Container {workspace.container_id[:12]} is not running (actual status: {actual_status}), starting...")
+            logger.warning(
+                f"[TERMINAL_WS] Container {workspace.container_id[:12]} is not running (actual status: {actual_status}), starting..."
+            )
             success = workspace_manager.start_workspace(workspace_id)
             logger.info(f"[TERMINAL_WS] Start workspace result: {success}")
             if not success:
-                await websocket.send_json({
-                    "type": "error", 
-                    "message": f"Failed to start workspace container (status: {actual_status})"
-                })
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "message": f"Failed to start workspace container (status: {actual_status})",
+                    }
+                )
                 await websocket.close(code=4005, reason="Failed to start container")
                 return
             # Wait a moment for container to start, then verify
@@ -278,9 +287,13 @@ async def terminal_websocket(
                 await websocket.close(code=4005, reason="Container failed to start")
                 return
         else:
-            logger.info(f"[TERMINAL_WS] Container {workspace.container_id[:12]} is running, proceeding...")
+            logger.info(
+                f"[TERMINAL_WS] Container {workspace.container_id[:12]} is running, proceeding..."
+            )
     except docker.errors.NotFound:
-        logger.warning(f"[TERMINAL_WS] Container {workspace.container_id[:12]} not found in Docker, recreating...")
+        logger.warning(
+            f"[TERMINAL_WS] Container {workspace.container_id[:12]} not found in Docker, recreating..."
+        )
         success = workspace_manager.start_workspace(workspace_id)
         if not success:
             await websocket.send_json({"type": "error", "message": "Failed to recreate container"})
@@ -291,12 +304,14 @@ async def terminal_websocket(
         # Try to start anyway
         success = workspace_manager.start_workspace(workspace_id)
         if not success:
-            await websocket.send_json({"type": "error", "message": f"Container check failed: {str(e)}"})
+            await websocket.send_json(
+                {"type": "error", "message": f"Container check failed: {str(e)}"}
+            )
             await websocket.close(code=4005, reason="Container check failed")
             return
 
     terminal_service = get_terminal_service()
-    session: Optional[TerminalSession] = None
+    session: TerminalSession | None = None
 
     try:
         # Get or create session
@@ -314,10 +329,12 @@ async def terminal_websocket(
         # Output callback
         async def send_output(data: bytes):
             try:
-                await websocket.send_json({
-                    "type": "output",
-                    "data": data.decode("utf-8", errors="replace"),
-                })
+                await websocket.send_json(
+                    {
+                        "type": "output",
+                        "data": data.decode("utf-8", errors="replace"),
+                    }
+                )
             except Exception as e:
                 logger.debug(f"Failed to send output: {e}")
 
@@ -327,7 +344,7 @@ async def terminal_websocket(
         def output_callback(data: bytes):
             try:
                 output_queue.put_nowait(data)
-            except:
+            except Exception:
                 pass
 
         # Start the terminal stream
@@ -338,30 +355,36 @@ async def terminal_websocket(
         )
 
         if not socket:
-            await websocket.send_json({
-                "type": "error",
-                "message": "Failed to start terminal stream",
-            })
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "Failed to start terminal stream",
+                }
+            )
             await websocket.close(code=4500, reason="Stream failed")
             return
 
         # Send connected message
         logger.info(f"[WS_CONNECT] Sending connected message for session: {session.session_id}")
-        await websocket.send_json({
-            "type": "connected",
-            "session_id": session.session_id,
-        })
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "session_id": session.session_id,
+            }
+        )
 
         # Task to forward output from queue to websocket
         async def forward_output():
             while True:
                 try:
                     data = await asyncio.wait_for(output_queue.get(), timeout=0.1)
-                    await websocket.send_json({
-                        "type": "output",
-                        "data": data.decode("utf-8", errors="replace"),
-                    })
-                except asyncio.TimeoutError:
+                    await websocket.send_json(
+                        {
+                            "type": "output",
+                            "data": data.decode("utf-8", errors="replace"),
+                        }
+                    )
+                except TimeoutError:
                     continue
                 except Exception as e:
                     logger.debug(f"Forward output error: {e}")
@@ -377,12 +400,16 @@ async def terminal_websocket(
                 try:
                     message = await websocket.receive_json()
                     msg_type = message.get("type")
-                    logger.debug(f"[WS_MSG] Received message type: {msg_type} for session: {session.session_id}")
+                    logger.debug(
+                        f"[WS_MSG] Received message type: {msg_type} for session: {session.session_id}"
+                    )
 
                     if msg_type == "input":
                         data = message.get("data", "")
                         if data:
-                            logger.debug(f"[WS_INPUT] Input for session {session.session_id}: {len(data)} chars")
+                            logger.debug(
+                                f"[WS_INPUT] Input for session {session.session_id}: {len(data)} chars"
+                            )
                             terminal_service.write_input(
                                 session.session_id,
                                 data.encode("utf-8"),
@@ -391,7 +418,9 @@ async def terminal_websocket(
                     elif msg_type == "resize":
                         cols = message.get("cols", 80)
                         rows = message.get("rows", 24)
-                        logger.debug(f"[WS_RESIZE] Resize for session {session.session_id}: {cols}x{rows}")
+                        logger.debug(
+                            f"[WS_RESIZE] Resize for session {session.session_id}: {cols}x{rows}"
+                        )
                         terminal_service.resize_terminal(
                             session.session_id,
                             cols,
@@ -399,7 +428,9 @@ async def terminal_websocket(
                         )
 
                 except WebSocketDisconnect:
-                    logger.info(f"[WS_DISCONNECT] WebSocket disconnected for session {session.session_id}")
+                    logger.info(
+                        f"[WS_DISCONNECT] WebSocket disconnected for session {session.session_id}"
+                    )
                     break
                 except json.JSONDecodeError:
                     logger.warning("[WS_MSG] Invalid JSON received")
@@ -417,14 +448,15 @@ async def terminal_websocket(
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
         try:
-            await websocket.send_json({
-                "type": "error",
-                "message": str(e),
-            })
-        except:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": str(e),
+                }
+            )
+        except Exception:
             pass
     finally:
         # Close session on disconnect
         if session:
             terminal_service.close_session(session.session_id)
-

@@ -10,8 +10,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.git import router as git_router
-from app.utils.clerk_auth import verify_clerk_token
 from app.services.workspace_manager import get_workspace_manager
+from app.utils.clerk_auth import verify_clerk_token
 
 
 @pytest.fixture

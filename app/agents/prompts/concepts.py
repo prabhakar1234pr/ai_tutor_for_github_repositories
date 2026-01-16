@@ -33,7 +33,7 @@ Generate 3-5 major learning concepts for this day.
   ...
 ]
 
-**CRITICAL:** 
+**CRITICAL:**
 - Return ONLY the JSON array, no markdown formatting
 - Include 3-5 concepts
 """

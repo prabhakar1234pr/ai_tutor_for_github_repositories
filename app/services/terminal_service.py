@@ -4,15 +4,17 @@ Manages PTY sessions for interactive terminal access in Docker containers.
 """
 
 import asyncio
-import uuid
 import logging
 import re
-from typing import Optional, Dict, Callable, Any
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-import docker
-from docker.errors import NotFound, APIError
+from datetime import UTC, datetime
+from typing import Any
 
+from docker.errors import APIError, NotFound
+
+import docker
 from app.core.supabase_client import get_supabase_client
 from app.services.docker_client import get_docker_client
 from app.services.git_service import GitService
@@ -23,6 +25,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TerminalSession:
     """Terminal session data model."""
+
     session_id: str
     workspace_id: str
     exec_id: str
@@ -34,7 +37,7 @@ class TerminalSession:
 class TerminalService:
     """
     Manages PTY terminal sessions in Docker containers.
-    
+
     Provides interactive shell access with bidirectional streaming
     and terminal resize support.
     """
@@ -45,13 +48,13 @@ class TerminalService:
         self.git_service = GitService()
         self.table_name = "terminal_sessions"
         # Active exec streams: session_id -> (socket, exec_id)
-        self._active_streams: Dict[str, Any] = {}
+        self._active_streams: dict[str, Any] = {}
         # Output buffers for commit detection: session_id -> buffer_string
-        self._output_buffers: Dict[str, str] = {}
+        self._output_buffers: dict[str, str] = {}
         # Maximum buffer size per session (keep last 10KB of output)
         self._max_buffer_size = 10240
         # Track last processed commit SHA per session to avoid duplicate updates
-        self._last_processed_commits: Dict[str, str] = {}
+        self._last_processed_commits: dict[str, str] = {}
 
     def _row_to_session(self, row: dict) -> TerminalSession:
         """Convert database row to TerminalSession object."""
@@ -65,10 +68,7 @@ class TerminalService:
         )
 
     def create_session(
-        self,
-        workspace_id: str,
-        container_id: str,
-        name: str = "Terminal"
+        self, workspace_id: str, container_id: str, name: str = "Terminal"
     ) -> TerminalSession:
         """
         Create a new terminal session for a workspace.
@@ -87,7 +87,7 @@ class TerminalService:
         try:
             client = docker.from_env()
             container = client.containers.get(container_id)
-            
+
             # Create exec with TTY and interactive mode
             exec_instance = client.api.exec_create(
                 container.id,
@@ -100,15 +100,15 @@ class TerminalService:
             )
             exec_id = exec_instance["Id"]
 
-        except NotFound:
+        except NotFound as e:
             logger.error(f"Container not found: {container_id}")
-            raise ValueError("Container not found")
+            raise ValueError("Container not found") from e
         except APIError as e:
             logger.error(f"Failed to create exec: {e}")
-            raise RuntimeError(f"Failed to create terminal exec: {e}")
+            raise RuntimeError(f"Failed to create terminal exec: {e}") from e
 
         # Save to database
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         row = {
             "session_id": session_id,
             "workspace_id": workspace_id,
@@ -126,7 +126,7 @@ class TerminalService:
         logger.info(f"Terminal session created: {session_id} for workspace {workspace_id}")
         return self._row_to_session(result.data[0])
 
-    def get_session(self, session_id: str) -> Optional[TerminalSession]:
+    def get_session(self, session_id: str) -> TerminalSession | None:
         """
         Get a terminal session by ID.
 
@@ -138,10 +138,7 @@ class TerminalService:
         """
         logger.debug(f"[GET_SESSION] Looking up session: {session_id}")
         result = (
-            self.supabase.table(self.table_name)
-            .select("*")
-            .eq("session_id", session_id)
-            .execute()
+            self.supabase.table(self.table_name).select("*").eq("session_id", session_id).execute()
         )
 
         if not result.data:
@@ -174,11 +171,8 @@ class TerminalService:
         return [self._row_to_session(row) for row in result.data]
 
     async def start_stream(
-        self,
-        session_id: str,
-        container_id: str,
-        on_output: Callable[[bytes], None]
-    ) -> Optional[Any]:
+        self, session_id: str, container_id: str, on_output: Callable[[bytes], None]
+    ) -> Any | None:
         """
         Start the exec stream for a terminal session.
 
@@ -197,7 +191,7 @@ class TerminalService:
 
         try:
             client = docker.from_env()
-            
+
             # Start exec with socket connection
             socket = client.api.exec_start(
                 session.exec_id,
@@ -213,15 +207,13 @@ class TerminalService:
             }
 
             # Start reading output in background
-            asyncio.create_task(
-                self._read_output(session_id, socket, on_output)
-            )
+            asyncio.create_task(self._read_output(session_id, socket, on_output))
 
             logger.info(f"Terminal stream started for session {session_id}")
-            
+
             # Send initial newline to trigger prompt (helps with bash prompt timing)
             try:
-                sock = self._get_raw_socket(socket)
+                self._get_raw_socket(socket)
                 # Small delay to let bash initialize
                 await asyncio.sleep(0.1)
             except Exception as e:
@@ -239,15 +231,12 @@ class TerminalService:
         """Get the underlying socket, handling both Unix and Windows (NpipeSocket)."""
         # On Unix, socket has _sock attribute
         # On Windows, socket is NpipeSocket which can be used directly
-        if hasattr(socket, '_sock'):
+        if hasattr(socket, "_sock"):
             return socket._sock
         return socket
 
     async def _read_output(
-        self,
-        session_id: str,
-        socket: Any,
-        on_output: Callable[[bytes], None]
+        self, session_id: str, socket: Any, on_output: Callable[[bytes], None]
     ) -> None:
         """
         Continuously read output from the exec socket.
@@ -259,9 +248,9 @@ class TerminalService:
         """
         try:
             sock = self._get_raw_socket(socket)
-            
+
             # Only set blocking mode if the socket supports it (not on Windows NpipeSocket)
-            if hasattr(sock, 'setblocking'):
+            if hasattr(sock, "setblocking"):
                 try:
                     sock.setblocking(False)
                 except Exception:
@@ -272,10 +261,9 @@ class TerminalService:
                     # Use asyncio to read from socket in a thread pool
                     loop = asyncio.get_running_loop()
                     data = await loop.run_in_executor(
-                        None,
-                        lambda s=sock: self._read_socket_data(s)
+                        None, lambda s=sock: self._read_socket_data(s)
                     )
-                    
+
                     if data:
                         logger.debug(f"Terminal output for {session_id}: {len(data)} bytes")
                         # Check for commits in terminal output
@@ -284,7 +272,7 @@ class TerminalService:
                     else:
                         # No data, small sleep to prevent busy loop
                         await asyncio.sleep(0.02)
-                        
+
                 except BlockingIOError:
                     await asyncio.sleep(0.02)
                 except asyncio.CancelledError:
@@ -302,21 +290,21 @@ class TerminalService:
         finally:
             logger.info(f"Output reader stopped for session {session_id}")
 
-    def _read_socket_data(self, sock: Any) -> Optional[bytes]:
+    def _read_socket_data(self, sock: Any) -> bytes | None:
         """Read data from socket with timeout."""
         try:
             # Set timeout if supported
-            if hasattr(sock, 'settimeout'):
+            if hasattr(sock, "settimeout"):
                 sock.settimeout(0.1)
-            
+
             # Read data - use read() for NpipeSocket on Windows, recv() for Unix sockets
-            if hasattr(sock, 'recv'):
+            if hasattr(sock, "recv"):
                 data = sock.recv(4096)
-            elif hasattr(sock, 'read'):
+            elif hasattr(sock, "read"):
                 data = sock.read(4096)
             else:
                 return None
-                
+
             return data if data else None
         except Exception:
             return None
@@ -340,15 +328,17 @@ class TerminalService:
         try:
             socket = stream_info["socket"]
             sock = self._get_raw_socket(socket)
-            
-            logger.debug(f"[WRITE_INPUT] Writing {len(data)} bytes to session {session_id}: {data[:50]!r}")
-            
+
+            logger.debug(
+                f"[WRITE_INPUT] Writing {len(data)} bytes to session {session_id}: {data[:50]!r}"
+            )
+
             # Use sendall if available (Unix), otherwise use send or write (Windows NpipeSocket)
-            if hasattr(sock, 'sendall'):
+            if hasattr(sock, "sendall"):
                 sock.sendall(data)
-            elif hasattr(sock, 'send'):
+            elif hasattr(sock, "send"):
                 sock.send(data)
-            elif hasattr(sock, 'write'):
+            elif hasattr(sock, "write"):
                 sock.write(data)
             else:
                 logger.error(f"[WRITE_INPUT] Socket has no send method for session {session_id}")
@@ -359,12 +349,7 @@ class TerminalService:
             logger.error(f"[WRITE_INPUT] Failed to write to terminal {session_id}: {e}")
             return False
 
-    def resize_terminal(
-        self,
-        session_id: str,
-        cols: int,
-        rows: int
-    ) -> bool:
+    def resize_terminal(self, session_id: str, cols: int, rows: int) -> bool:
         """
         Resize the terminal PTY.
 
@@ -417,14 +402,14 @@ class TerminalService:
             del self._active_streams[session_id]
         else:
             logger.debug(f"[CLOSE_SESSION] Session not in active streams: {session_id}")
-        
+
         # Clean up output buffer
         self._cleanup_session_buffer(session_id)
 
         # Update database
-        self.supabase.table(self.table_name).update(
-            {"is_active": False}
-        ).eq("session_id", session_id).execute()
+        self.supabase.table(self.table_name).update({"is_active": False}).eq(
+            "session_id", session_id
+        ).execute()
 
         logger.info(f"[CLOSE_SESSION] Terminal session closed: {session_id}")
         return True
@@ -440,10 +425,8 @@ class TerminalService:
             True if deleted successfully
         """
         self.close_session(session_id)
-        
-        self.supabase.table(self.table_name).delete().eq(
-            "session_id", session_id
-        ).execute()
+
+        self.supabase.table(self.table_name).delete().eq("session_id", session_id).execute()
 
         # Clean up output buffer
         self._cleanup_session_buffer(session_id)
@@ -454,7 +437,7 @@ class TerminalService:
     def _check_for_commit(self, session_id: str, output_data: bytes) -> None:
         """
         Check terminal output for git commit commands and update last_platform_commit.
-        
+
         Args:
             session_id: Terminal session ID
             output_data: Raw terminal output bytes
@@ -464,36 +447,42 @@ class TerminalService:
             session = self.get_session(session_id)
             if not session:
                 return
-            
+
             # Decode output and add to buffer
             try:
                 output_text = output_data.decode("utf-8", errors="replace")
             except Exception:
                 return
-            
+
             # Update buffer for this session
             if session_id not in self._output_buffers:
                 self._output_buffers[session_id] = ""
-            
+
             buffer = self._output_buffers[session_id] + output_text
             # Keep buffer size manageable
             if len(buffer) > self._max_buffer_size:
-                buffer = buffer[-self._max_buffer_size:]
+                buffer = buffer[-self._max_buffer_size :]
             self._output_buffers[session_id] = buffer
-            
+
             # Check for commit success patterns
             # Pattern 1: Git prompt format "[branch_name commit_sha]" - e.g., "[main abc1234]"
             # Pattern 2: "commit abc1234" or "commit abc1234 (HEAD -> main)" from git log/show
             # Pattern 3: "Created commit abc1234" from git commit output
             # Pattern 4: "[main abc1234]" at end of line (git prompt)
             commit_patterns = [
-                (r'\[([^\]]+)\s+([a-f0-9]{7,40})\]\s*$', True),  # [branch sha] at end of line (git prompt)
-                (r'\[([^\]]+)\s+([a-f0-9]{7,40})\]', False),  # [branch sha] anywhere
-                (r'commit\s+([a-f0-9]{7,40})\s*(?:\(HEAD|$)', True),  # commit sha followed by HEAD or end
-                (r'Created\s+commit\s+([a-f0-9]{7,40})', True),  # Created commit sha
+                (
+                    r"\[([^\]]+)\s+([a-f0-9]{7,40})\]\s*$",
+                    True,
+                ),  # [branch sha] at end of line (git prompt)
+                (r"\[([^\]]+)\s+([a-f0-9]{7,40})\]", False),  # [branch sha] anywhere
+                (
+                    r"commit\s+([a-f0-9]{7,40})\s*(?:\(HEAD|$)",
+                    True,
+                ),  # commit sha followed by HEAD or end
+                (r"Created\s+commit\s+([a-f0-9]{7,40})", True),  # Created commit sha
             ]
-            
-            for pattern, require_end in commit_patterns:
+
+            for pattern, _require_end in commit_patterns:
                 matches = re.findall(pattern, buffer, re.IGNORECASE | re.MULTILINE)
                 if matches:
                     # Get the most recent match
@@ -501,30 +490,34 @@ class TerminalService:
                         commit_sha = matches[-1][-1]  # Last element of tuple
                     else:
                         commit_sha = matches[-1]
-                    
+
                     # Validate SHA format (should be 7-40 hex characters)
-                    if not re.match(r'^[a-f0-9]{7,40}$', commit_sha, re.IGNORECASE):
+                    if not re.match(r"^[a-f0-9]{7,40}$", commit_sha, re.IGNORECASE):
                         continue
-                    
+
                     # Check if we've already processed this commit
                     if session_id in self._last_processed_commits:
                         if self._last_processed_commits[session_id] == commit_sha:
                             continue  # Already processed this commit
-                    
+
                     # Mark as processed
                     self._last_processed_commits[session_id] = commit_sha
-                    
+
                     # Schedule update with a small delay to ensure commit is complete
                     asyncio.create_task(
                         self._update_last_platform_commit_delayed(session.workspace_id, session_id)
                     )
-                    logger.info(f"Detected commit {commit_sha[:7]} in terminal output for workspace {session.workspace_id}, will update last_platform_commit")
+                    logger.info(
+                        f"Detected commit {commit_sha[:7]} in terminal output for workspace {session.workspace_id}, will update last_platform_commit"
+                    )
                     break
-                    
+
         except Exception as e:
             logger.debug(f"Error checking for commit in terminal output: {e}")
 
-    async def _update_last_platform_commit_delayed(self, workspace_id: str, session_id: str) -> None:
+    async def _update_last_platform_commit_delayed(
+        self, workspace_id: str, session_id: str
+    ) -> None:
         """
         Wait a short delay then update last_platform_commit to ensure commit is complete.
         """
@@ -535,7 +528,7 @@ class TerminalService:
     async def _update_last_platform_commit(self, workspace_id: str, session_id: str) -> None:
         """
         Update last_platform_commit in database after detecting a commit in terminal.
-        
+
         Args:
             workspace_id: Workspace UUID
             session_id: Terminal session ID
@@ -543,36 +536,44 @@ class TerminalService:
         try:
             # Get workspace to find container_id
             from app.services.workspace_manager import get_workspace_manager
+
             workspace_manager = get_workspace_manager()
             workspace = workspace_manager.get_workspace(workspace_id)
-            
+
             if not workspace or not workspace.container_id:
-                logger.warning(f"Cannot update last_platform_commit: workspace or container not found")
+                logger.warning(
+                    "Cannot update last_platform_commit: workspace or container not found"
+                )
                 return
-            
+
             # Get current HEAD commit SHA
             rev_result = self.git_service.git_rev_parse(workspace.container_id, "HEAD")
             if not rev_result.get("success"):
                 logger.warning(f"Failed to get HEAD commit SHA: {rev_result.get('error')}")
                 return
-            
+
             commit_sha = rev_result.get("sha")
             if not commit_sha:
                 logger.warning("No commit SHA returned from git rev-parse")
                 return
-            
+
             # Get user_id from workspace
             user_id = workspace.user_id
-            
+
             # Update last_platform_commit in database
-            self.supabase.table("workspaces").update({
-                "last_platform_commit": commit_sha
-            }).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
-            
-            logger.info(f"Updated last_platform_commit to {commit_sha[:7]} for workspace {workspace_id} (detected from terminal)")
-            
+            self.supabase.table("workspaces").update({"last_platform_commit": commit_sha}).eq(
+                "workspace_id", workspace_id
+            ).eq("user_id", user_id).execute()
+
+            logger.info(
+                f"Updated last_platform_commit to {commit_sha[:7]} for workspace {workspace_id} (detected from terminal)"
+            )
+
         except Exception as e:
-            logger.error(f"Failed to update last_platform_commit for workspace {workspace_id}: {e}", exc_info=True)
+            logger.error(
+                f"Failed to update last_platform_commit for workspace {workspace_id}: {e}",
+                exc_info=True,
+            )
 
     def _cleanup_session_buffer(self, session_id: str) -> None:
         """Clean up output buffer when session is closed."""
@@ -583,7 +584,7 @@ class TerminalService:
 
 
 # Singleton instance
-_terminal_service: Optional[TerminalService] = None
+_terminal_service: TerminalService | None = None
 
 
 def get_terminal_service() -> TerminalService:
@@ -592,4 +593,3 @@ def get_terminal_service() -> TerminalService:
     if _terminal_service is None:
         _terminal_service = TerminalService()
     return _terminal_service
-

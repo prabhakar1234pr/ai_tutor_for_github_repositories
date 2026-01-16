@@ -3,11 +3,12 @@ Docker Client Service
 Wrapper around the Docker SDK for container operations.
 """
 
-import docker
-from docker.errors import NotFound, APIError, ImageNotFound
-from typing import Optional, Tuple
 import logging
 import threading
+
+from docker.errors import APIError, ImageNotFound, NotFound
+
+import docker
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ DEFAULT_IMAGE = "gitguide-workspace:latest"
 class DockerClient:
     """
     Thread-safe wrapper for Docker SDK operations on workspace containers.
-    
+
     Creates a fresh Docker client for each operation to avoid connection issues
     in multi-threaded environments like FastAPI.
     """
@@ -36,7 +37,7 @@ class DockerClient:
             logger.info("Docker client initialized - connection verified")
         except Exception as e:
             logger.error(f"Failed to connect to Docker: {e}")
-            raise RuntimeError(f"Docker is not available: {e}")
+            raise RuntimeError(f"Docker is not available: {e}") from e
 
     def _get_client(self) -> docker.DockerClient:
         """Get a fresh Docker client for thread-safe operations."""
@@ -45,11 +46,11 @@ class DockerClient:
     def create_container(
         self,
         name: str,
-        volume_name: Optional[str] = None,
+        volume_name: str | None = None,
         image: str = DEFAULT_IMAGE,
         memory_limit: str = DEFAULT_MEMORY_LIMIT,
         cpu_quota: int = DEFAULT_CPU_QUOTA,
-    ) -> Tuple[str, str]:
+    ) -> tuple[str, str]:
         """
         Create a new container with resource limits and optional persistent volume.
 
@@ -65,7 +66,7 @@ class DockerClient:
         """
         try:
             client = self._get_client()
-            
+
             # Create volume mount if volume_name provided
             volumes = None
             if volume_name:
@@ -73,7 +74,7 @@ class DockerClient:
                 self.create_volume(volume_name)
                 volumes = {volume_name: {"bind": "/workspace", "mode": "rw"}}
                 logger.info(f"Mounting volume {volume_name} to /workspace")
-            
+
             container = client.containers.create(
                 image=image,
                 name=name,
@@ -88,12 +89,12 @@ class DockerClient:
             )
             logger.info(f"Container created: {name} ({container.short_id})")
             return container.id, "created"
-        except ImageNotFound:
+        except ImageNotFound as e:
             logger.error(f"Image not found: {image}")
-            raise ValueError(f"Docker image not found: {image}")
+            raise ValueError(f"Docker image not found: {image}") from e
         except APIError as e:
             logger.error(f"Failed to create container {name}: {e}")
-            raise RuntimeError(f"Failed to create container: {e}")
+            raise RuntimeError(f"Failed to create container: {e}") from e
 
     def start_container(self, container_id: str) -> bool:
         """
@@ -206,8 +207,8 @@ class DockerClient:
             return False
 
     def exec_command(
-        self, container_id: str, command: str, workdir: Optional[str] = None, retries: int = 2
-    ) -> Tuple[int, str]:
+        self, container_id: str, command: str, workdir: str | None = None, retries: int = 2
+    ) -> tuple[int, str]:
         """
         Execute a command inside a running container.
 
@@ -221,21 +222,23 @@ class DockerClient:
             Tuple of (exit_code, output)
         """
         last_error = None
-        
+
         for attempt in range(retries + 1):
             try:
                 client = self._get_client()
                 container = client.containers.get(container_id)
-                
+
                 # Reload to get fresh status
                 container.reload()
 
                 if container.status != "running":
-                    logger.error(f"Container {container_id} is not running (status: {container.status})")
+                    logger.error(
+                        f"Container {container_id} is not running (status: {container.status})"
+                    )
                     return -1, f"Container is not running (status: {container.status})"
 
                 logger.debug(f"Executing command in {container_id[:12]}: {command[:50]}...")
-                
+
                 exec_result = container.exec_run(
                     cmd=["bash", "-c", command],
                     workdir=workdir or "/workspace",
@@ -244,9 +247,11 @@ class DockerClient:
                 )
 
                 output = exec_result.output.decode("utf-8") if exec_result.output else ""
-                
-                logger.debug(f"Command exit code: {exec_result.exit_code}, output length: {len(output)}")
-                
+
+                logger.debug(
+                    f"Command exit code: {exec_result.exit_code}, output length: {len(output)}"
+                )
+
                 return exec_result.exit_code, output
 
             except NotFound:
@@ -257,6 +262,7 @@ class DockerClient:
                 logger.warning(f"Exec attempt {attempt + 1} failed for {container_id}: {e}")
                 if attempt < retries:
                     import time
+
                     time.sleep(0.1 * (attempt + 1))  # Brief backoff
                     continue
                 logger.error(f"Failed to exec in {container_id} after {retries + 1} attempts: {e}")
@@ -266,10 +272,11 @@ class DockerClient:
                 logger.error(f"Unexpected error in exec_command: {e}")
                 if attempt < retries:
                     import time
+
                     time.sleep(0.1 * (attempt + 1))
                     continue
                 return -1, str(e)
-        
+
         return -1, last_error or "Unknown error"
 
     def is_docker_available(self) -> bool:
@@ -290,7 +297,7 @@ class DockerClient:
 
         Returns:
             True if volume exists or was created successfully
-        
+
         # ------------------------------------------------------------------
         # GCP DEPLOYMENT: Single VM with Docker (No code changes needed)
         # ------------------------------------------------------------------
@@ -313,7 +320,7 @@ class DockerClient:
         """
         try:
             client = self._get_client()
-            
+
             # Check if volume already exists
             try:
                 client.volumes.get(volume_name)
@@ -321,12 +328,10 @@ class DockerClient:
                 return True
             except NotFound:
                 pass
-            
+
             # Create volume
             client.volumes.create(
-                name=volume_name,
-                driver="local",
-                labels={"app": "gitguide", "type": "workspace"}
+                name=volume_name, driver="local", labels={"app": "gitguide", "type": "workspace"}
             )
             logger.info(f"Volume created: {volume_name}")
             return True
@@ -344,7 +349,7 @@ class DockerClient:
 
         Returns:
             True if removed successfully
-        
+
         # ------------------------------------------------------------------
         # GCP DEPLOYMENT: Works as-is on Compute Engine VM
         # ------------------------------------------------------------------
@@ -384,7 +389,7 @@ class DockerClient:
 
 
 # Singleton instance
-_docker_client: Optional[DockerClient] = None
+_docker_client: DockerClient | None = None
 _docker_client_lock = threading.Lock()
 
 

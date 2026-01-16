@@ -1,13 +1,15 @@
-from fastapi import HTTPException, Header
-from typing import Optional
+import logging
+
 import httpx
 import jwt
-import logging
+from fastapi import Header, HTTPException
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-async def verify_clerk_token(authorization: Optional[str] = Header(None)) -> dict:
+
+async def verify_clerk_token(authorization: str | None = Header(None)) -> dict:
     """Validate Clerk JWT and return user info (id, email, name)."""
 
     # 1. Ensure Authorization header exists
@@ -33,21 +35,21 @@ async def verify_clerk_token(authorization: Optional[str] = Header(None)) -> dic
         clerk_user_id = decoded.get("sub")
         if not clerk_user_id:
             raise HTTPException(401, "Invalid token: user ID missing")
-    except Exception:
-        raise HTTPException(401, "Invalid token format")
+    except Exception as e:
+        raise HTTPException(401, "Invalid token format") from e
 
     # 5. Fetch user from Clerk REST API
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"https://api.clerk.com/v1/users/{clerk_user_id}",
-                headers={"Authorization": f"Bearer {settings.clerk_secret_key}"}
+                headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
             )
-    except httpx.TimeoutException:
-        raise HTTPException(500, "Clerk service timeout")
+    except httpx.TimeoutException as e:
+        raise HTTPException(500, "Clerk service timeout") from e
     except Exception as e:
         logger.error(f"Clerk API error: {e}")
-        raise HTTPException(500, "Failed to contact Clerk")
+        raise HTTPException(500, "Failed to contact Clerk") from e
 
     # 6. Handle Clerk API errors
     if resp.status_code == 401:
@@ -74,11 +76,7 @@ async def verify_clerk_token(authorization: Optional[str] = Header(None)) -> dic
     last = user.get("last_name") or ""
     name = (first + " " + last).strip() or user.get("username")
 
-    return {
-        "clerk_user_id": clerk_user_id,
-        "email": email,
-        "name": name
-    }
+    return {"clerk_user_id": clerk_user_id, "email": email, "name": name}
 
 
 async def verify_clerk_token_from_string(token: str) -> dict:
@@ -97,21 +95,21 @@ async def verify_clerk_token_from_string(token: str) -> dict:
         clerk_user_id = decoded.get("sub")
         if not clerk_user_id:
             raise HTTPException(401, "Invalid token: user ID missing")
-    except Exception:
-        raise HTTPException(401, "Invalid token format")
+    except Exception as e:
+        raise HTTPException(401, "Invalid token format") from e
 
     # Fetch user from Clerk REST API
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"https://api.clerk.com/v1/users/{clerk_user_id}",
-                headers={"Authorization": f"Bearer {settings.clerk_secret_key}"}
+                headers={"Authorization": f"Bearer {settings.clerk_secret_key}"},
             )
-    except httpx.TimeoutException:
-        raise HTTPException(500, "Clerk service timeout")
+    except httpx.TimeoutException as e:
+        raise HTTPException(500, "Clerk service timeout") from e
     except Exception as e:
         logger.error(f"Clerk API error: {e}")
-        raise HTTPException(500, "Failed to contact Clerk")
+        raise HTTPException(500, "Failed to contact Clerk") from e
 
     if resp.status_code == 401:
         raise HTTPException(401, "Invalid Clerk API key")
@@ -137,8 +135,4 @@ async def verify_clerk_token_from_string(token: str) -> dict:
     last = user.get("last_name") or ""
     name = (first + " " + last).strip() or user.get("username")
 
-    return {
-        "clerk_user_id": clerk_user_id,
-        "email": email,
-        "name": name
-    }
+    return {"clerk_user_id": clerk_user_id, "email": email, "name": name}

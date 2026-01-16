@@ -39,7 +39,7 @@ Create a {target_days}-day learning plan where each day has a focused theme.
   }}
 ]
 
-**CRITICAL:** 
+**CRITICAL:**
 - Return ONLY the JSON array, no markdown formatting
 - Start from day 1 (Day 0 is handled separately)
 - Include exactly {last_day_number} days

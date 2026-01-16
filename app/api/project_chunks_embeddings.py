@@ -1,7 +1,8 @@
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends, Query
+from uuid import UUID
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from supabase import Client
-from uuid import UUID
 
 from app.core.supabase_client import get_supabase_client
 from app.services.embedding_pipeline import run_embedding_pipeline
@@ -26,9 +27,12 @@ async def start_project_embedding(
     """
     Kick off the embedding pipeline for a project in the background.
     """
-    project_response = supabase.table("Projects").select(
-        "project_id, github_url, status"
-    ).eq("project_id", str(payload.project_id)).execute()
+    project_response = (
+        supabase.table("Projects")
+        .select("project_id, github_url, status")
+        .eq("project_id", str(payload.project_id))
+        .execute()
+    )
 
     if not project_response.data:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -71,9 +75,12 @@ async def get_project_embedding_status(
     """
     Return the current embedding status for a project.
     """
-    response = supabase.table("Projects").select(
-        "project_id, status, error_message, updated_at"
-    ).eq("project_id", str(project_id)).execute()
+    response = (
+        supabase.table("Projects")
+        .select("project_id, status, error_message, updated_at")
+        .eq("project_id", str(project_id))
+        .execute()
+    )
 
     if not response.data:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -98,9 +105,9 @@ async def list_project_chunks(
     List stored chunks for a project (metadata + content).
     """
     # Verify project exists
-    project_resp = supabase.table("Projects").select("project_id").eq(
-        "project_id", str(project_id)
-    ).execute()
+    project_resp = (
+        supabase.table("Projects").select("project_id").eq("project_id", str(project_id)).execute()
+    )
     if not project_resp.data:
         raise HTTPException(status_code=404, detail="Project not found")
 
@@ -119,4 +126,3 @@ async def list_project_chunks(
         "count": len(chunks_resp.data) if chunks_resp.data else 0,
         "chunks": chunks_resp.data or [],
     }
-

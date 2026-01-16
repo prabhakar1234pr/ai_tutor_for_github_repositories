@@ -9,7 +9,7 @@ from app.agents.state import ConceptData
 DAY_0_THEME = {
     "day_number": 0,
     "theme": "Project Setup & GitHub Connection",
-    "description": "Set up your development environment and connect your GitHub account to start building."
+    "description": "Set up your development environment and connect your GitHub account to start building.",
 }
 
 DAY_0_CONTENT: list[ConceptData] = [
@@ -355,7 +355,7 @@ You now understand:
                 "description": "Paste your GitHub profile URL (example: https://github.com/yourusername) to verify your account. Before submitting, make sure your profile has: 1) A profile photo or avatar, 2) Your name filled in, 3) A short bio describing yourself as a developer. We'll verify your profile is set up correctly.",
                 "task_type": "github_profile",
                 "estimated_minutes": 5,
-                "difficulty": "easy"
+                "difficulty": "easy",
             },
             {
                 "order_index": 2,
@@ -363,7 +363,7 @@ You now understand:
                 "description": "Create a new PUBLIC repository on GitHub for this learning project. Requirements: 1) Name it something descriptive (e.g., 'learning-python-api' or 'my-first-webapp'), 2) Check 'Add a README file' when creating, 3) Choose a license (MIT is a good default). After creating, paste the repository URL (example: https://github.com/username/repo-name).",
                 "task_type": "create_repo",
                 "estimated_minutes": 5,
-                "difficulty": "easy"
+                "difficulty": "easy",
             },
             {
                 "order_index": 3,
@@ -371,7 +371,7 @@ You now understand:
                 "description": "Edit your repository's README.md file to personalize it. Add: 1) A project title, 2) A brief description of what you'll be learning, 3) Your name as the author. You can edit directly on GitHub (click the pencil icon) or clone locally and push. After committing, paste the commit URL (example: https://github.com/username/repo/commit/abc123).",
                 "task_type": "verify_commit",
                 "estimated_minutes": 10,
-                "difficulty": "easy"
+                "difficulty": "easy",
             },
             {
                 "order_index": 4,
@@ -384,10 +384,10 @@ You now understand:
                     "Make sure you select 'Only select repositories' and choose your specific repository, not 'All repositories'",
                     "The token must have 'Contents' read and write permissions",
                     "Copy the token immediately after generation - GitHub only shows it once",
-                    "If you lose the token, you'll need to generate a new one"
-                ]
-            }
-        ]
+                    "If you lose the token, you'll need to generate a new one",
+                ],
+            },
+        ],
     }
 ]
 
@@ -395,7 +395,7 @@ You now understand:
 def get_day_0_content() -> tuple[dict, list[ConceptData]]:
     """
     Returns Day 0 theme and content.
-    
+
     Returns:
         tuple: (day_0_theme, day_0_concepts)
     """

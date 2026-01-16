@@ -3,17 +3,17 @@ Workspace API Router
 REST endpoints for Docker workspace management.
 """
 
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from supabase import Client
 import logging
 
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from supabase import Client
+
 from app.core.supabase_client import get_supabase_client
+from app.services.external_commit_service import ExternalCommitService
+from app.services.workspace_manager import Workspace, get_workspace_manager
 from app.utils.clerk_auth import verify_clerk_token
 from app.utils.db_helpers import get_user_id_from_clerk
-from app.services.workspace_manager import get_workspace_manager, Workspace
-from app.services.external_commit_service import ExternalCommitService
-from app.services.external_commit_service import ExternalCommitService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -106,13 +106,13 @@ async def create_workspace(
 
     except ValueError as e:
         logger.error(f"Validation error creating workspace: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
         logger.error(f"Runtime error creating workspace: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Error creating workspace: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to create workspace: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create workspace: {str(e)}") from e
 
 
 @router.get("/{workspace_id}")
@@ -139,10 +139,14 @@ async def get_workspace(
 
         # Verify ownership
         if workspace.user_id != user_id:
-            logger.warning(f"[API_GET_WORKSPACE] Access denied for user {user_id} on workspace {workspace_id}")
+            logger.warning(
+                f"[API_GET_WORKSPACE] Access denied for user {user_id} on workspace {workspace_id}"
+            )
             raise HTTPException(status_code=403, detail="Access denied")
 
-        logger.debug(f"[API_GET_WORKSPACE] Returning workspace: {workspace_id}, status: {workspace.container_status}")
+        logger.debug(
+            f"[API_GET_WORKSPACE] Returning workspace: {workspace_id}, status: {workspace.container_status}"
+        )
         return {
             "success": True,
             "workspace": _workspace_to_response(workspace),
@@ -152,7 +156,7 @@ async def get_workspace(
         raise
     except Exception as e:
         logger.error(f"Error fetching workspace: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to fetch workspace: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch workspace: {str(e)}") from e
 
 
 @router.get("/project/{project_id}")
@@ -183,7 +187,7 @@ async def get_workspace_by_project(
         raise
     except Exception as e:
         logger.error(f"Error fetching workspace: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to fetch workspace: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch workspace: {str(e)}") from e
 
 
 @router.delete("/{workspace_id}")
@@ -224,7 +228,7 @@ async def destroy_workspace(
         raise
     except Exception as e:
         logger.error(f"Error destroying workspace: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to destroy workspace: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to destroy workspace: {str(e)}") from e
 
 
 @router.post("/{workspace_id}/start")
@@ -278,7 +282,9 @@ async def start_workspace(
             external_service = ExternalCommitService(supabase=supabase)
             external_result = external_service.check_external_commits(workspace_id, user_id)
             if external_result.get("has_external_commits"):
-                reset_result = external_service.reset_to_platform_commit(workspace_id, user_id, confirmed=True)
+                reset_result = external_service.reset_to_platform_commit(
+                    workspace_id, user_id, confirmed=True
+                )
                 external_result["auto_reset"] = reset_result
         except Exception as e:
             logger.warning(f"External commit check skipped: {e}")
@@ -297,7 +303,7 @@ async def start_workspace(
         raise
     except Exception as e:
         logger.error(f"Error starting workspace: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to start workspace: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to start workspace: {str(e)}") from e
 
 
 @router.post("/{workspace_id}/stop")
@@ -345,40 +351,7 @@ async def stop_workspace(
         raise
     except Exception as e:
         logger.error(f"Error stopping workspace: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to stop workspace: {str(e)}")
-
-
-@router.post("/{workspace_id}/clone-repo")
-async def clone_repo(
-    workspace_id: str,
-    user_info: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_supabase_client),
-):
-    """
-    Clone user's repository into the workspace (if Day 0 is complete).
-    """
-    try:
-        clerk_user_id = user_info["clerk_user_id"]
-        user_id = get_user_id_from_clerk(supabase, clerk_user_id)
-
-        manager = get_workspace_manager()
-        git_result = manager.initialize_git_repo(
-            workspace_id,
-            user_id,
-            author_name=user_info.get("name") or "GitGuide",
-            author_email=user_info.get("email") or "noreply@gitguide.local",
-        )
-
-        if not git_result.get("success"):
-            raise HTTPException(status_code=400, detail=git_result.get("error", "Git init failed"))
-
-        return {"success": True, "git": git_result}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error cloning repo: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to clone repo: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to stop workspace: {str(e)}") from e
 
 
 @router.post("/{workspace_id}/clone-repo", response_model=CloneRepoResponse)
@@ -415,7 +388,8 @@ async def clone_repo(
         raise
     except Exception as e:
         logger.error(f"Error cloning repo: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to clone repo: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to clone repo: {str(e)}") from e
+
 
 @router.get("/{workspace_id}/status")
 async def get_workspace_status(
@@ -452,5 +426,4 @@ async def get_workspace_status(
         raise
     except Exception as e:
         logger.error(f"Error fetching workspace status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to fetch status: {str(e)}")
-
+        raise HTTPException(status_code=500, detail=f"Failed to fetch status: {str(e)}") from e

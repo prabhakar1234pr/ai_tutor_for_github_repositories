@@ -1,5 +1,5 @@
 import uuid
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import FastAPI
@@ -92,7 +92,9 @@ def test_chatbot_success(chatbot_client, monkeypatch):
 def test_chatbot_project_not_ready(chatbot_client, monkeypatch):
     user_id = str(uuid.uuid4())
     project_id = str(uuid.uuid4())
-    supabase = _make_supabase_mock(user_id=user_id, project_id=project_id, project_status="processing")
+    supabase = _make_supabase_mock(
+        user_id=user_id, project_id=project_id, project_status="processing"
+    )
     chatbot_client.app.dependency_overrides[get_supabase_client] = lambda: supabase
 
     resp = chatbot_client.post(
@@ -135,5 +137,3 @@ def test_chatbot_rag_unexpected_error_maps_to_500(chatbot_client, monkeypatch):
     )
     assert resp.status_code == 500, resp.text
     assert "failed to generate response" in resp.json()["detail"].lower()
-
-

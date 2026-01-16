@@ -3,7 +3,6 @@ AI Tutor for GitHub Repositories
 Application package initialization
 """
 
-from app.config import settings, get_settings, Settings
+from app.config import Settings, get_settings, settings
 
 __all__ = ["settings", "get_settings", "Settings"]
-

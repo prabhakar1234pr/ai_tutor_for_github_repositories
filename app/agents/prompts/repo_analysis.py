@@ -32,7 +32,7 @@ Focus on:
   "difficulty": "beginner/intermediate/advanced"
 }}
 
-**CRITICAL:** 
+**CRITICAL:**
 - Return ONLY the JSON object
 - NO markdown code blocks (no ```json or ```)
 - NO explanatory text before or after

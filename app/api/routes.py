@@ -1,8 +1,10 @@
-from fastapi import APIRouter
 import logging
+
+from fastapi import APIRouter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
 
 @router.get("/route1")
 def route_one():
@@ -11,8 +13,9 @@ def route_one():
     return {
         "message": "✅ You successfully called Route 1!",
         "button": "Button One",
-        "data": "This is data from the backend"
+        "data": "This is data from the backend",
     }
+
 
 @router.get("/route2")
 def route_two():
@@ -21,18 +24,16 @@ def route_two():
     return {
         "message": "✅ You successfully called Route 2!",
         "button": "Button Two",
-        "data": "Backend is working perfectly!"
+        "data": "Backend is working perfectly!",
     }
+
 
 @router.get("/hello")
 def say_hello():
     """Button Four endpoint"""
     logger.info("Hello endpoint called")
-    return {
-        "message": "👋 Hello from API routes!",
-        "status": "connected",
-        "backend": "FastAPI"
-    }
+    return {"message": "👋 Hello from API routes!", "status": "connected", "backend": "FastAPI"}
+
 
 @router.get("/health")
 def health_check():
@@ -40,6 +41,5 @@ def health_check():
     return {
         "status": "healthy",
         "service": "AI Tutor for GitHub Repositories",
-        "message": "🚀 Backend is running smoothly!"
+        "message": "🚀 Backend is running smoothly!",
     }
-

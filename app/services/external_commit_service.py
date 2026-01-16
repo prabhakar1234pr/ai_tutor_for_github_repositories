@@ -4,8 +4,6 @@ Detects commits made outside the platform and resets when consented.
 """
 
 import logging
-from datetime import datetime, timezone
-from typing import Dict, Optional
 
 from supabase import Client
 
@@ -21,15 +19,15 @@ class ExternalCommitService:
 
     def __init__(
         self,
-        supabase: Optional[Client] = None,
-        workspace_manager: Optional[WorkspaceManager] = None,
-        git_service: Optional[GitService] = None,
+        supabase: Client | None = None,
+        workspace_manager: WorkspaceManager | None = None,
+        git_service: GitService | None = None,
     ):
         self.supabase = supabase or get_supabase_client()
         self.workspace_manager = workspace_manager or WorkspaceManager()
         self.git_service = git_service or GitService()
 
-    def check_external_commits(self, workspace_id: str, user_id: str) -> Dict[str, object]:
+    def check_external_commits(self, workspace_id: str, user_id: str) -> dict[str, object]:
         """
         Detect external commits by comparing last_platform_commit with remote HEAD.
         """
@@ -92,7 +90,9 @@ class ExternalCommitService:
             "external_commits": commits,
         }
 
-    def reset_to_platform_commit(self, workspace_id: str, user_id: str, confirmed: bool) -> Dict[str, object]:
+    def reset_to_platform_commit(
+        self, workspace_id: str, user_id: str, confirmed: bool
+    ) -> dict[str, object]:
         """
         Hard reset to last_platform_commit and force push (if consented).
         """
@@ -130,9 +130,9 @@ class ExternalCommitService:
             if not push_result.get("success"):
                 return {"success": False, "error": push_result.get("error")}
 
-        self.supabase.table("workspaces").update(
-            {"last_platform_commit": last_platform_commit}
-        ).eq("workspace_id", workspace_id).eq("user_id", user_id).execute()
+        self.supabase.table("workspaces").update({"last_platform_commit": last_platform_commit}).eq(
+            "workspace_id", workspace_id
+        ).eq("user_id", user_id).execute()
 
         return {
             "success": True,
@@ -140,7 +140,7 @@ class ExternalCommitService:
             "push_result": push_result,
         }
 
-    def get_external_commits_list(self, workspace_id: str, user_id: str) -> Dict[str, object]:
+    def get_external_commits_list(self, workspace_id: str, user_id: str) -> dict[str, object]:
         """
         Convenience method to return external commits list.
         """
@@ -153,7 +153,7 @@ class ExternalCommitService:
             "has_external_commits": result.get("has_external_commits", False),
         }
 
-    def _get_workspace_row(self, workspace_id: str, user_id: str) -> Optional[Dict[str, object]]:
+    def _get_workspace_row(self, workspace_id: str, user_id: str) -> dict[str, object] | None:
         response = (
             self.supabase.table("workspaces")
             .select(
@@ -167,12 +167,14 @@ class ExternalCommitService:
             return None
         return response.data[0]
 
-    def _get_project_row(self, project_id: Optional[str], user_id: str) -> Optional[Dict[str, object]]:
+    def _get_project_row(self, project_id: str | None, user_id: str) -> dict[str, object] | None:
         if not project_id:
             return None
         response = (
             self.supabase.table("Projects")
-            .select("project_id, user_id, user_repo_url, github_access_token, github_consent_accepted")
+            .select(
+                "project_id, user_id, user_repo_url, github_access_token, github_consent_accepted"
+            )
             .eq("project_id", project_id)
             .eq("user_id", user_id)
             .execute()
@@ -182,7 +184,7 @@ class ExternalCommitService:
         return response.data[0]
 
     @staticmethod
-    def _apply_token(repo_url: str, token: Optional[str]) -> str:
+    def _apply_token(repo_url: str, token: str | None) -> str:
         if not token:
             return repo_url
         if repo_url.startswith("https://"):

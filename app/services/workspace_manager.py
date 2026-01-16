@@ -4,14 +4,13 @@ High-level workspace lifecycle management.
 Handles creating, retrieving, and destroying Docker workspaces.
 """
 
-import uuid
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from app.core.supabase_client import get_supabase_client
-from app.services.docker_client import get_docker_client, DockerClient
+from app.services.docker_client import DockerClient, get_docker_client
 from app.services.git_service import GitService
 
 logger = logging.getLogger(__name__)
@@ -20,10 +19,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Workspace:
     """Workspace data model."""
+
     workspace_id: str
     user_id: str
     project_id: str
-    container_id: Optional[str]
+    container_id: str | None
     container_status: str
     created_at: datetime
     last_active_at: datetime
@@ -32,7 +32,7 @@ class Workspace:
 class WorkspaceManager:
     """
     Manages workspace lifecycle - creation, retrieval, destruction.
-    
+
     # ==========================================================================
     # GCP DEPLOYMENT: Single VM with Docker (No code changes needed)
     # ==========================================================================
@@ -101,8 +101,7 @@ class WorkspaceManager:
 
         # Create container with persistent volume
         container_id, status = self.docker.create_container(
-            name=container_name,
-            volume_name=volume_name
+            name=container_name, volume_name=volume_name
         )
 
         # Start container immediately
@@ -110,7 +109,7 @@ class WorkspaceManager:
         status = self.docker.get_container_status(container_id)
 
         # Save to database
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         row = {
             "workspace_id": workspace_id,
             "user_id": user_id,
@@ -128,10 +127,12 @@ class WorkspaceManager:
             self.docker.remove_container(container_id)
             raise RuntimeError("Failed to save workspace to database")
 
-        logger.info(f"Workspace created: {workspace_id} with container {container_id[:12]} and volume {volume_name}")
+        logger.info(
+            f"Workspace created: {workspace_id} with container {container_id[:12]} and volume {volume_name}"
+        )
         return self._row_to_workspace(result.data[0])
 
-    def get_workspace(self, workspace_id: str) -> Optional[Workspace]:
+    def get_workspace(self, workspace_id: str) -> Workspace | None:
         """
         Get a workspace by its ID.
 
@@ -154,12 +155,12 @@ class WorkspaceManager:
             return None
 
         workspace = self._row_to_workspace(result.data[0])
-        logger.debug(f"[GET_WORKSPACE] Found workspace: {workspace_id}, container: {workspace.container_id[:12] if workspace.container_id else 'None'}, status: {workspace.container_status}")
+        logger.debug(
+            f"[GET_WORKSPACE] Found workspace: {workspace_id}, container: {workspace.container_id[:12] if workspace.container_id else 'None'}, status: {workspace.container_status}"
+        )
         return workspace
 
-    def get_workspace_by_user_project(
-        self, user_id: str, project_id: str
-    ) -> Optional[Workspace]:
+    def get_workspace_by_user_project(self, user_id: str, project_id: str) -> Workspace | None:
         """
         Get existing workspace for a user-project pair.
 
@@ -202,7 +203,9 @@ class WorkspaceManager:
             # Check if container actually exists in Docker
             if existing.container_id:
                 container_exists = self.docker.container_exists(existing.container_id)
-                logger.debug(f"[GET_OR_CREATE] Container {existing.container_id[:12]} exists: {container_exists}")
+                logger.debug(
+                    f"[GET_OR_CREATE] Container {existing.container_id[:12]} exists: {container_exists}"
+                )
                 if not container_exists:
                     # Container was deleted (orphaned workspace) - recreate it
                     logger.warning(
@@ -210,13 +213,13 @@ class WorkspaceManager:
                         "Recreating container..."
                     )
                     return self._recreate_container(existing)
-            
+
             # Update last_active_at
             self._update_last_active(existing.workspace_id)
             logger.info(f"[GET_OR_CREATE] Returning existing workspace: {existing.workspace_id}")
             return existing
 
-        logger.info(f"[GET_OR_CREATE] No existing workspace, creating new one")
+        logger.info("[GET_OR_CREATE] No existing workspace, creating new one")
         return self.create_workspace(user_id, project_id)
 
     def _recreate_container(self, workspace: Workspace) -> Workspace:
@@ -235,8 +238,7 @@ class WorkspaceManager:
 
         # Create new container with existing volume (files are preserved)
         container_id, status = self.docker.create_container(
-            name=container_name,
-            volume_name=volume_name
+            name=container_name, volume_name=volume_name
         )
 
         # Start container immediately
@@ -244,12 +246,14 @@ class WorkspaceManager:
         status = self.docker.get_container_status(container_id)
 
         # Update database with new container_id
-        now = datetime.now(timezone.utc).isoformat()
-        self.supabase.table(self.table_name).update({
-            "container_id": container_id,
-            "container_status": status,
-            "last_active_at": now,
-        }).eq("workspace_id", workspace.workspace_id).execute()
+        now = datetime.now(UTC).isoformat()
+        self.supabase.table(self.table_name).update(
+            {
+                "container_id": container_id,
+                "container_status": status,
+                "last_active_at": now,
+            }
+        ).eq("workspace_id", workspace.workspace_id).execute()
 
         logger.info(
             f"Recreated container {container_id[:12]} for workspace {workspace.workspace_id} "
@@ -264,7 +268,7 @@ class WorkspaceManager:
             container_id=container_id,
             container_status=status,
             created_at=workspace.created_at,
-            last_active_at=datetime.now(timezone.utc),
+            last_active_at=datetime.now(UTC),
         )
 
     def destroy_workspace(self, workspace_id: str, delete_volume: bool = True) -> bool:
@@ -295,19 +299,13 @@ class WorkspaceManager:
             logger.info(f"Volume {volume_name} removed")
 
         # Delete from database
-        self.supabase.table(self.table_name).delete().eq(
-            "workspace_id", workspace_id
-        ).execute()
+        self.supabase.table(self.table_name).delete().eq("workspace_id", workspace_id).execute()
 
         logger.info(f"Workspace destroyed: {workspace_id}")
         return True
 
     def initialize_git_repo(
-        self,
-        workspace_id: str,
-        user_id: str,
-        author_name: str,
-        author_email: str
+        self, workspace_id: str, user_id: str, author_name: str, author_email: str
     ) -> dict:
         """
         Clone and configure the user's repository in the workspace.
@@ -321,7 +319,10 @@ class WorkspaceManager:
         if not workspace.container_id:
             return {"success": False, "error": "Workspace has no container"}
         if workspace.container_status != "running":
-            return {"success": False, "error": f"Container not running ({workspace.container_status})"}
+            return {
+                "success": False,
+                "error": f"Container not running ({workspace.container_status})",
+            }
 
         project_response = (
             self.supabase.table("Projects")
@@ -344,9 +345,14 @@ class WorkspaceManager:
         if clone_result.get("status") == "error":
             return {"success": False, "error": clone_result.get("message", "Clone failed")}
 
-        config_result = git_service.configure_git_user(workspace.container_id, author_name, author_email)
+        config_result = git_service.configure_git_user(
+            workspace.container_id, author_name, author_email
+        )
         if not config_result.get("success"):
-            return {"success": False, "error": config_result.get("error", "Failed to configure git user")}
+            return {
+                "success": False,
+                "error": config_result.get("error", "Failed to configure git user"),
+            }
 
         branch_result = git_service.git_current_branch(workspace.container_id)
         branch = branch_result.get("branch") if branch_result.get("success") else "main"
@@ -370,7 +376,9 @@ class WorkspaceManager:
         if last_commit and not existing_last_commit:
             update_data["last_platform_commit"] = last_commit
 
-        self.supabase.table(self.table_name).update(update_data).eq("workspace_id", workspace_id).execute()
+        self.supabase.table(self.table_name).update(update_data).eq(
+            "workspace_id", workspace_id
+        ).execute()
 
         return {
             "success": True,
@@ -379,7 +387,7 @@ class WorkspaceManager:
             "last_platform_commit": last_commit,
         }
 
-    def get_workspace_status(self, workspace_id: str) -> Optional[str]:
+    def get_workspace_status(self, workspace_id: str) -> str | None:
         """
         Get current container status for a workspace.
 
@@ -422,12 +430,12 @@ class WorkspaceManager:
         # Check if container exists
         if workspace.container_id:
             container_exists = self.docker.container_exists(workspace.container_id)
-            logger.debug(f"[START_WORKSPACE] Container {workspace.container_id[:12]} exists: {container_exists}")
+            logger.debug(
+                f"[START_WORKSPACE] Container {workspace.container_id[:12]} exists: {container_exists}"
+            )
             if not container_exists:
                 # Container was deleted - recreate it
-                logger.warning(
-                    f"Container {workspace.container_id[:12]} not found. Recreating..."
-                )
+                logger.warning(f"Container {workspace.container_id[:12]} not found. Recreating...")
                 self._recreate_container(workspace)
                 return True
 
@@ -468,20 +476,20 @@ class WorkspaceManager:
 
     def _update_status(self, workspace_id: str, status: str) -> None:
         """Update container status in database."""
-        self.supabase.table(self.table_name).update(
-            {"container_status": status}
-        ).eq("workspace_id", workspace_id).execute()
+        self.supabase.table(self.table_name).update({"container_status": status}).eq(
+            "workspace_id", workspace_id
+        ).execute()
 
     def _update_last_active(self, workspace_id: str) -> None:
         """Update last_active_at timestamp."""
-        now = datetime.now(timezone.utc).isoformat()
-        self.supabase.table(self.table_name).update(
-            {"last_active_at": now}
-        ).eq("workspace_id", workspace_id).execute()
+        now = datetime.now(UTC).isoformat()
+        self.supabase.table(self.table_name).update({"last_active_at": now}).eq(
+            "workspace_id", workspace_id
+        ).execute()
 
 
 # Singleton instance
-_workspace_manager: Optional[WorkspaceManager] = None
+_workspace_manager: WorkspaceManager | None = None
 
 
 def get_workspace_manager() -> WorkspaceManager:
@@ -490,4 +498,3 @@ def get_workspace_manager() -> WorkspaceManager:
     if _workspace_manager is None:
         _workspace_manager = WorkspaceManager()
     return _workspace_manager
-

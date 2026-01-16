@@ -1,4 +1,4 @@
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -79,5 +79,3 @@ async def test_generate_rag_response_raises_when_qdrant_empty(monkeypatch):
             conversation_history=[],
             top_k=1,
         )
-
-

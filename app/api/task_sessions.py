@@ -3,15 +3,16 @@ Task Sessions API
 Endpoints for base commit tracking per task session.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from supabase import Client
-import logging
 
 from app.core.supabase_client import get_supabase_client
+from app.services.task_session_service import TaskSessionService
 from app.utils.clerk_auth import verify_clerk_token
 from app.utils.db_helpers import get_user_id_from_clerk
-from app.services.task_session_service import TaskSessionService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -37,7 +38,9 @@ def start_task_session(
 
     result = service.start_task_session(request.task_id, user_id, request.workspace_id)
     if not result.get("success"):
-        raise HTTPException(status_code=500, detail=result.get("error", "Failed to start task session"))
+        raise HTTPException(
+            status_code=500, detail=result.get("error", "Failed to start task session")
+        )
 
     return result
 
@@ -80,7 +83,9 @@ def complete_task_session(
 
     result = service.complete_task_session(session_id, current_commit=request.current_commit)
     if not result.get("success"):
-        raise HTTPException(status_code=500, detail=result.get("error", "Failed to complete task session"))
+        raise HTTPException(
+            status_code=500, detail=result.get("error", "Failed to complete task session")
+        )
 
     return result
 

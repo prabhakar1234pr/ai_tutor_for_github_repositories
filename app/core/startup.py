@@ -4,6 +4,7 @@ Call this on app startup to initialize services.
 """
 
 import logging
+
 from app.services.rate_limiter import initialize_rate_limiter
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ async def startup_services():
     Call this from FastAPI startup event.
     """
     logger.info("🚀 Initializing application services...")
-    
+
     # Initialize rate limiter (will use Redis if available, fallback otherwise)
     try:
         await initialize_rate_limiter()
@@ -33,4 +34,3 @@ async def shutdown_services():
     logger.info("🛑 Shutting down application services...")
     # Add any cleanup logic here
     logger.info("✅ Services shut down")
-

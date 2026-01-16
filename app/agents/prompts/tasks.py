@@ -14,9 +14,9 @@ TASKS_GENERATION_PROMPT = """You are creating hands-on coding tasks for a learni
 **Your Task:**
 Generate 2-4 practical coding tasks that let students apply what they learned.
 
-**TASK REQUIREMENTS:**
+ **TASK REQUIREMENTS:**
 
-1. **Progressive Difficulty**: 
+ 1. **Progressive Difficulty**:
    - First task: "easy" - Basic application of the concept
    - Middle tasks: "medium" - Combining concepts or adding complexity
    - Last task: "hard" (optional) - Challenge task for advanced learners
@@ -25,16 +25,16 @@ Generate 2-4 practical coding tasks that let students apply what they learned.
    - What to build/create
    - Specific requirements (inputs, outputs, features)
    - Expected behavior or result
-   - Any constraints or guidelines
+    - Any constraints or guidelines
 
-3. **Practical & Realistic**: 
+ 3. **Practical & Realistic**:
    - Tasks should build toward real project features
    - Use realistic scenarios (not abstract puzzles)
    - Connect to the project they're learning to build
 
 4. **Time Estimates**:
    - easy: 10-15 minutes
-   - medium: 15-25 minutes  
+   - medium: 15-25 minutes
    - hard: 25-40 minutes
 
 **SKILL LEVEL ADAPTATION ({skill_level}):**
