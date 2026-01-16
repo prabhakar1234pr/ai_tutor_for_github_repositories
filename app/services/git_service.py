@@ -213,6 +213,7 @@ class GitService:
     def git_get_file_diff(self, container_id: str, file_path: str, staged: bool = False) -> Dict[str, str]:
         """
         Get diff for a specific file.
+        Handles both tracked and untracked files.
         
         Args:
             container_id: Container ID
@@ -223,6 +224,34 @@ class GitService:
             Dict with success status and diff output
         """
         safe_path = shlex.quote(file_path)
+        
+        # Check if file is untracked (new file)
+        check_cmd = f"git ls-files --error-unmatch {safe_path}"
+        check_exit, _ = self._exec(container_id, check_cmd)
+        is_untracked = check_exit != 0
+        
+        if is_untracked:
+            # For untracked files, show the entire file as new content
+            # Read the file content and format as a diff
+            read_cmd = f"cat {safe_path}"
+            read_exit, file_content = self._exec(container_id, read_cmd)
+            if read_exit != 0:
+                return {"success": False, "error": f"Failed to read file: {file_content}"}
+            
+            # Format as a new file diff
+            lines = file_content.splitlines()
+            diff_lines = [f"diff --git a/{file_path} b/{file_path}", "new file mode 100644", "index 0000000..0000000", "--- /dev/null", f"+++ b/{file_path}"]
+            if lines:
+                diff_lines.append("@@ -0,0 +1," + str(len(lines)) + " @@")
+                for line in lines:
+                    diff_lines.append(f"+{line}")
+            else:
+                diff_lines.append("@@ -0,0 +1,0 @@")
+                diff_lines.append("+")
+            
+            return {"success": True, "diff": "\n".join(diff_lines), "is_new_file": True}
+        
+        # For tracked files, use normal git diff
         if staged:
             # Show diff of staged changes
             cmd = f"git diff --cached {safe_path}"
@@ -232,9 +261,13 @@ class GitService:
         
         exit_code, output = self._exec(container_id, cmd)
         if exit_code != 0:
+            # Empty diff is valid (no changes)
+            if not output.strip():
+                return {"success": True, "diff": "", "is_new_file": False}
             return {"success": False, "error": output}
         
-        return {"success": True, "diff": output}
+        # Empty diff is valid
+        return {"success": True, "diff": output, "is_new_file": False}
 
     def git_commit(
         self,
