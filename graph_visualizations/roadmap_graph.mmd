@@ -1,0 +1,41 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	fetch_context(fetch_context)
+	analyze_repo(analyze_repo)
+	plan_curriculum(plan_curriculum)
+	insert_all_days(insert_all_days)
+	select_next_day(select_next_day)
+	build_memory_context(build_memory_context)
+	generate_concepts(generate_concepts)
+	save_concepts(save_concepts)
+	generate_concept_content(generate_concept_content)
+	save_concept_content(save_concept_content)
+	mark_day_complete(mark_day_complete)
+	create_day_summary(create_day_summary)
+	recover_failed_concepts(recover_failed_concepts)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> fetch_context;
+	analyze_repo --> plan_curriculum;
+	build_memory_context --> generate_concepts;
+	create_day_summary -. &nbsp;end&nbsp; .-> recover_failed_concepts;
+	create_day_summary -. &nbsp;generate_content&nbsp; .-> select_next_day;
+	fetch_context --> analyze_repo;
+	generate_concept_content --> save_concept_content;
+	generate_concepts --> save_concepts;
+	insert_all_days -. &nbsp;generate_content&nbsp; .-> select_next_day;
+	mark_day_complete --> create_day_summary;
+	plan_curriculum --> insert_all_days;
+	save_concept_content -.-> generate_concept_content;
+	save_concept_content -.-> mark_day_complete;
+	save_concepts -.-> generate_concept_content;
+	save_concepts -.-> mark_day_complete;
+	select_next_day --> build_memory_context;
+	recover_failed_concepts --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

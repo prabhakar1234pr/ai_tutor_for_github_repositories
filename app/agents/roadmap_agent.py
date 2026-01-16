@@ -10,12 +10,14 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 
 from app.agents.nodes.analyze_repo import analyze_repository
+from app.agents.nodes.day_summary import create_day_summary
 from app.agents.nodes.fetch_context import fetch_project_context
 from app.agents.nodes.generate_content import (
     generate_concepts_for_day,
     generate_subconcepts_and_tasks,
     select_next_incomplete_day,
 )
+from app.agents.nodes.memory_context import build_memory_context
 from app.agents.nodes.plan_curriculum import plan_and_save_curriculum
 from app.agents.nodes.recovery import recover_failed_concepts
 from app.agents.nodes.save_to_db import (
@@ -115,11 +117,13 @@ def build_roadmap_graph() -> StateGraph:
     # ===== CONTENT GENERATION LOOP =====
     # Note: Day 0 is handled separately via API endpoint (initialize-day0)
     workflow.add_node("select_next_day", select_next_incomplete_day)
+    workflow.add_node("build_memory_context", build_memory_context)
     workflow.add_node("generate_concepts", generate_concepts_for_day)
     workflow.add_node("save_concepts", save_concepts_to_db)
     workflow.add_node("generate_concept_content", generate_subconcepts_and_tasks)
     workflow.add_node("save_concept_content", save_concept_content)
     workflow.add_node("mark_day_complete", mark_day_generated)
+    workflow.add_node("create_day_summary", create_day_summary)
 
     # ===== RECOVERY PHASE =====
     workflow.add_node("recover_failed_concepts", recover_failed_concepts)
@@ -146,7 +150,8 @@ def build_roadmap_graph() -> StateGraph:
     )
 
     # Content generation loop
-    workflow.add_edge("select_next_day", "generate_concepts")
+    workflow.add_edge("select_next_day", "build_memory_context")
+    workflow.add_edge("build_memory_context", "generate_concepts")
     workflow.add_edge("generate_concepts", "save_concepts")
 
     # After saving concepts, loop through each concept to generate content
@@ -170,9 +175,10 @@ def build_roadmap_graph() -> StateGraph:
         },
     )
 
-    # After marking day complete, check if more days needed
+    # After marking day complete, create summary, then check if more days needed
+    workflow.add_edge("mark_day_complete", "create_day_summary")
     workflow.add_conditional_edges(
-        "mark_day_complete",
+        "create_day_summary",
         should_continue_generation,
         {
             "generate_content": "select_next_day",
@@ -287,6 +293,7 @@ async def run_roadmap_agent(
             "current_day_id": None,
             "current_concepts": [],
             "current_concept_index": 0,
+            "memory_context": None,
             "day_ids_map": None,
             "concept_ids_map": None,
             "is_complete": False,

@@ -14,6 +14,8 @@ CONCEPTS_GENERATION_PROMPT = """You are designing the learning concepts for a sp
 **Repository Context:**
 {repo_summary}
 
+{memory_context_section}
+
 **Your Task:**
 Generate 3-5 major learning concepts for this day.
 
@@ -22,6 +24,8 @@ Generate 3-5 major learning concepts for this day.
 - Concepts should take 30-60 minutes total (reading + tasks)
 - Order them from foundational to advanced
 - Keep titles clear and concise (3-6 words)
+- Build upon previous days' learning (if memory context is provided)
+- Ensure concepts progress logically from what was learned before
 
 **Return ONLY valid JSON array:**
 [

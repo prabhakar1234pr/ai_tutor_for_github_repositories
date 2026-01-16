@@ -109,12 +109,22 @@ async def generate_concepts_for_day(state: RoadmapAgentState) -> RoadmapAgentSta
         f"Summary: {repo_analysis['summary']}"
     )
 
+    # Build memory context section
+    memory_context = state.get("memory_context")
+    if memory_context:
+        memory_context_section = f"**Previous Days' Learning Context:**\n{memory_context}\n"
+    else:
+        memory_context_section = (
+            "**Previous Days' Learning Context:**\nNo previous days completed yet.\n"
+        )
+
     prompt = CONCEPTS_GENERATION_PROMPT.format(
         day_number=current_day_number,
         day_theme=day_theme,
         day_description=day_description,
         skill_level=skill_level,
         repo_summary=repo_summary,
+        memory_context_section=memory_context_section,
     )
 
     groq_service = get_groq_service()

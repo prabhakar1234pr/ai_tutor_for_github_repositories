@@ -72,6 +72,9 @@ class RoadmapAgentState(TypedDict):
     current_concepts: list[ConceptData]
     current_concept_index: int
 
+    # ===== MEMORY CONTEXT =====
+    memory_context: str | None  # Aggregated summaries from previous days
+
     # ===== INTERNAL STATE (Database IDs) =====
     day_ids_map: dict[int, str] | None
     concept_ids_map: dict[int, str] | None
