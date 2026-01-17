@@ -34,6 +34,7 @@ from app.agents.nodes.save_to_db import (
 )
 from app.agents.state import MemoryLedger, RoadmapAgentState
 from app.agents.utils import calculate_recursion_limit, validate_inputs
+from app.agents.utils.concept_order import SLIDING_WINDOW_AHEAD
 from app.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -91,11 +92,73 @@ def should_continue_after_concept(
     """
     Conditional edge function: Check if we should continue after marking a concept complete.
 
+    For lazy loading with sliding window:
+    - Stops after generating n+2 concepts ahead of user position
+    - Only continues if there are empty concepts within the window
+
     Returns:
-        "build_memory_context" if there are more concepts to generate
-        "end" if all concepts are complete
+        "build_memory_context" if there are more concepts to generate within window
+        "end" if window is full or all concepts are complete
     """
-    return should_continue_concept_generation(state)
+    if state.get("is_complete", False):
+        logger.info("✅ All concepts generated. Roadmap complete!")
+        return "end"
+
+    if state.get("error"):
+        logger.error(f"❌ Agent error: {state['error']}")
+        return "end"
+
+    # Check concept-level completion (derive from curriculum, not stored queue)
+    from app.agents.utils.concept_order import (
+        are_all_concepts_complete,
+        get_ordered_concept_ids,
+        get_user_current_index,
+        has_generated_up_to_window,
+    )
+
+    curriculum = state.get("curriculum", {})
+    concept_status_map = state.get("concept_status_map", {})
+    user_current_concept_id = state.get("user_current_concept_id")
+
+    # Derive ordered concept list from curriculum
+    ordered_concept_ids = get_ordered_concept_ids(curriculum)
+
+    if not ordered_concept_ids:
+        logger.info("✅ No concepts in curriculum. Roadmap complete!")
+        return "end"
+
+    # Check if all concepts are done
+    all_done = are_all_concepts_complete(ordered_concept_ids, concept_status_map)
+
+    if all_done:
+        logger.info(f"✅ All {len(ordered_concept_ids)} concepts generated. Roadmap complete!")
+        return "end"
+
+    # For lazy loading: Check if we've generated up to n+2 concepts
+    user_current_index = get_user_current_index(ordered_concept_ids, user_current_concept_id)
+
+    # Debug logging
+    logger.debug(
+        f"🔍 Window check: user_current_index={user_current_index}, "
+        f"user_current_concept_id={user_current_concept_id}, "
+        f"window_size={SLIDING_WINDOW_AHEAD}"
+    )
+
+    window_full = has_generated_up_to_window(
+        ordered_concept_ids, concept_status_map, user_current_index
+    )
+
+    if window_full:
+        # Note: is_paused flag is set in mark_concept_complete node, not here
+        # Conditional edge functions can't modify state
+        logger.info(
+            f"⏸️  Sliding window full (n+{SLIDING_WINDOW_AHEAD}). "
+            f"User at index {user_current_index}, generated up to index {user_current_index + SLIDING_WINDOW_AHEAD}. "
+            f"Pausing generation. Waiting for user progress."
+        )
+        return "end"
+
+    return "build_memory_context"
 
 
 def build_roadmap_graph() -> StateGraph:
@@ -301,6 +364,7 @@ async def run_roadmap_agent(
             "concept_ids_map": None,  # curriculum_id -> database_id
             # Status tracking
             "is_complete": False,
+            "is_paused": False,
             "error": None,
         }
 
@@ -325,11 +389,30 @@ async def run_roadmap_agent(
                 "duration_seconds": max(0.0, time.time() - start_time),
             }
 
-        logger.info(f"✅ Roadmap generation completed successfully for project_id={project_id}")
+        # Check if generation was paused (window full) vs truly complete
+        is_complete = final_state.get("is_complete", False)
+        is_paused = final_state.get("is_paused", False)
+
+        if is_complete:
+            logger.info(f"✅ Roadmap generation completed successfully for project_id={project_id}")
+        elif is_paused:
+            # Window is full - generation paused, waiting for user progress
+            logger.info(
+                f"⏸️  Roadmap generation paused (window full) for project_id={project_id}. "
+                f"Waiting for user progress to continue."
+            )
+        else:
+            # Neither complete nor paused - this shouldn't happen normally
+            logger.warning(
+                f"⚠️  Roadmap generation ended without completion or pause flag for project_id={project_id}"
+            )
+
         return {
             "success": True,
             "project_id": project_id,
             "error": None,
+            "is_complete": is_complete,
+            "is_paused": is_paused,
             "duration_seconds": max(0.0, time.time() - start_time),
         }
 

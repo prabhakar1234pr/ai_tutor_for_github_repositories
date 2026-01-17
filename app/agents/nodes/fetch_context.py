@@ -46,7 +46,7 @@ def fetch_project_context(state: RoadmapAgentState) -> RoadmapAgentState:
     supabase = get_supabase_client()
     project_response = (
         supabase.table("projects")
-        .select("project_id, project_name, github_url, skill_level, target_days, status")
+        .select("project_id, project_name, github_url, skill_level, target_days, status, user_id")
         .eq("project_id", project_id)
         .execute()
     )
@@ -55,6 +55,7 @@ def fetch_project_context(state: RoadmapAgentState) -> RoadmapAgentState:
         raise ValueError(f"Project {project_id} not found in database")
 
     project = project_response.data[0]
+    user_id = project.get("user_id")
 
     # Verify project status is ready (embeddings should be complete)
     if project["status"] != "ready":
@@ -63,11 +64,20 @@ def fetch_project_context(state: RoadmapAgentState) -> RoadmapAgentState:
             f"Roadmap generation may fail if embeddings are not complete."
         )
 
+    # Store user_id in state for later use (to query user_concept_progress)
+    state["_user_id"] = user_id
+
+    # Note: user_current_concept_id will be determined after concepts are saved
+    # using user_concept_progress table (see get_user_current_concept_from_progress)
+    state["user_current_concept_id"] = None
+    logger.info(
+        "📍 User current concept will be determined from user_concept_progress after concepts are saved"
+    )
+
     logger.info("✅ Project context fetched:")
     logger.info(f"   Project Name: {project['project_name']}")
     logger.info(f"   GitHub URL: {github_url}")
     logger.info(f"   Skill Level: {skill_level}")
     logger.info(f"   Target Days: {target_days}")
 
-    # State already has the required fields, no update needed
     return state

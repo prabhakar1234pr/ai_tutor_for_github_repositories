@@ -1,12 +1,16 @@
 """
 Service to trigger roadmap generation agent as a background task.
 This runs after embeddings are complete.
+
+Also includes incremental concept generation for lazy loading.
 """
 
 import asyncio
 import logging
 
 from app.agents.roadmap_agent import run_roadmap_agent
+from app.agents.state import ConceptStatus, MemoryLedger, RoadmapAgentState
+from app.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,18 @@ async def run_roadmap_generation(
         )
 
         if result["success"]:
-            logger.info(f"✅ Roadmap generation completed successfully for project_id={project_id}")
+            # Check if it was paused vs truly completed
+            if result.get("is_complete", False):
+                logger.info(
+                    f"✅ Roadmap generation completed successfully for project_id={project_id}"
+                )
+            elif result.get("is_paused", False):
+                logger.info(
+                    f"⏸️  Roadmap generation paused (window full) for project_id={project_id}. "
+                    f"Waiting for user progress to continue."
+                )
+            else:
+                logger.info(f"✅ Roadmap generation completed for project_id={project_id}")
         else:
             logger.error(
                 f"❌ Roadmap generation failed for project_id={project_id}: {result.get('error')}"
@@ -88,5 +103,263 @@ def trigger_roadmap_generation_sync(
                 target_days=target_days,
             )
         )
+    finally:
+        loop.close()
+
+
+async def run_incremental_concept_generation(project_id: str):
+    """
+    Run incremental concept generation for lazy loading.
+
+    This function:
+    1. Loads state from database (curriculum, concept_status_map, user_current_concept_id)
+    2. Runs only the generation loop (skips planning phase)
+    3. Generates concepts up to n+2 ahead of user position
+    4. Stops when window is full
+
+    This is triggered when user completes a concept.
+
+    Args:
+        project_id: UUID of the project
+    """
+    logger.info(f"🔄 Starting incremental concept generation for project_id={project_id}")
+
+    try:
+        supabase = get_supabase_client()
+
+        # Load project data
+        project_response = (
+            supabase.table("projects")
+            .select(
+                "project_id, github_url, skill_level, target_days, user_id, curriculum_structure"
+            )
+            .eq("project_id", project_id)
+            .execute()
+        )
+
+        if not project_response.data:
+            logger.error(f"❌ Project {project_id} not found")
+            return
+
+        project = project_response.data[0]
+        github_url = project["github_url"]
+        skill_level = project["skill_level"]
+        target_days = project["target_days"]
+        user_id = project.get("user_id")
+        curriculum_structure = project.get("curriculum_structure")
+
+        if not curriculum_structure:
+            logger.warning(
+                f"⚠️  No curriculum_structure found for project {project_id}. Skipping incremental generation."
+            )
+            return
+
+        # Load concept_status_map from concepts table
+        # Try to load curriculum_id if it exists, otherwise match by title
+        concepts_response = (
+            supabase.table("concepts")
+            .select("concept_id, generated_status, title, curriculum_id")
+            .eq("project_id", project_id)
+            .execute()
+        )
+
+        concept_status_map: dict[str, ConceptStatus] = {}
+        concept_ids_map: dict[str, str] = {}  # curriculum_id -> database_id
+
+        # Build mapping from curriculum structure for fallback
+        curriculum_concepts = curriculum_structure.get("concepts", {})
+        title_to_curriculum_id: dict[str, str] = {}
+        for cid, cdata in curriculum_concepts.items():
+            title = cdata.get("title", "")
+            if title:
+                title_to_curriculum_id[title] = cid
+
+        for concept in concepts_response.data or []:
+            db_concept_id = concept["concept_id"]
+            generated_status = concept.get("generated_status", "pending")
+
+            # Map database status to internal status
+            if generated_status == "generated":
+                status = "ready"
+            elif generated_status == "generated_with_errors":
+                status = "generated_with_errors"
+            elif generated_status == "failed":
+                status = "failed"
+            elif generated_status == "generating":
+                status = "generating"
+            elif generated_status == "pending":
+                status = "empty"  # Map "pending" (DB) to "empty" (internal state)
+            else:
+                status = "empty"  # Default fallback
+
+            # Get curriculum_id: use curriculum_id field if available, otherwise match by title
+            curriculum_id = concept.get("curriculum_id")
+            if not curriculum_id:
+                # Fallback: match by title
+                title = concept.get("title", "")
+                curriculum_id = title_to_curriculum_id.get(title)
+                if not curriculum_id:
+                    logger.warning(
+                        f"⚠️  Could not find curriculum_id for concept {db_concept_id} (title: {title})"
+                    )
+                    continue
+
+            concept_status_map[curriculum_id] = {
+                "status": status,
+                "attempt_count": 0,
+                "failure_reason": None,
+            }
+            concept_ids_map[curriculum_id] = db_concept_id
+
+        # Load day_ids_map
+        days_response = (
+            supabase.table("roadmap_days")
+            .select("day_id, day_number")
+            .eq("project_id", project_id)
+            .execute()
+        )
+
+        day_ids_map: dict[int, str] = {}
+        for day in days_response.data or []:
+            day_ids_map[day["day_number"]] = day["day_id"]
+
+        # Load memory_ledger from completed concepts
+        # Get concepts that are completed and extract their summaries
+        completed_concepts_response = (
+            supabase.table("concepts")
+            .select("concept_id, summary, files_touched, skills_unlocked, curriculum_id, title")
+            .eq("project_id", project_id)
+            .eq("generated_status", "generated")
+            .execute()
+        )
+
+        memory_ledger: MemoryLedger = {
+            "completed_concepts": [],
+            "files_touched": [],
+            "skills_unlocked": [],
+        }
+
+        concept_summaries: dict[str, str] = {}
+
+        for concept in completed_concepts_response.data or []:
+            db_concept_id = concept["concept_id"]
+            # Use curriculum_id if available, otherwise match by title
+            curriculum_id = concept.get("curriculum_id")
+            if not curriculum_id:
+                title = concept.get("title", "")
+                curriculum_id = title_to_curriculum_id.get(title)
+                if not curriculum_id:
+                    continue
+
+            memory_ledger["completed_concepts"].append(curriculum_id)
+            if concept.get("summary"):
+                concept_summaries[curriculum_id] = concept["summary"]
+            if concept.get("files_touched"):
+                memory_ledger["files_touched"].extend(concept["files_touched"] or [])
+            if concept.get("skills_unlocked"):
+                memory_ledger["skills_unlocked"].extend(concept["skills_unlocked"] or [])
+
+        # Determine user's current concept from user_concept_progress table
+        from app.agents.nodes.save_to_db import get_user_current_concept_from_progress
+
+        user_current_concept_id = None
+        if user_id and concept_ids_map:
+            user_current_concept_id = get_user_current_concept_from_progress(
+                project_id=project_id,
+                user_id=user_id,
+                concept_ids_map=concept_ids_map,
+            )
+
+        # Build initial state for incremental generation
+        initial_state: RoadmapAgentState = {
+            "project_id": project_id,
+            "github_url": github_url,
+            "skill_level": skill_level,
+            "target_days": target_days,
+            "repo_analysis": None,  # Not needed for incremental generation
+            "curriculum": curriculum_structure,
+            "concept_status_map": concept_status_map,
+            "concept_summaries": concept_summaries,
+            "memory_ledger": memory_ledger,
+            "user_current_concept_id": user_current_concept_id,
+            "current_day_number": 0,
+            "current_day_id": None,
+            "current_concepts": [],
+            "current_concept_index": 0,
+            "memory_context": None,
+            "day_ids_map": day_ids_map,
+            "concept_ids_map": concept_ids_map,
+            "is_complete": False,
+            "is_paused": False,
+            "error": None,
+        }
+
+        # Run only the generation loop manually (not using graph)
+        # The graph would start from fetch_context but curriculum is already loaded
+        # We manually call the generation loop nodes instead
+
+        logger.info(f"🔄 Running incremental generation loop for project_id={project_id}")
+        logger.info(f"   User current concept: {user_current_concept_id}")
+        logger.info("   Concepts to generate: up to n+2 ahead")
+
+        # Invoke the graph - it will start from fetch_context but curriculum is already loaded
+        # The graph needs to be modified to skip planning if curriculum exists
+        # For now, we'll manually call the generation loop nodes
+        from app.agents.nodes.generate_content import generate_concept_content
+        from app.agents.nodes.memory_context import build_memory_context
+        from app.agents.nodes.save_to_db import mark_concept_complete
+        from app.agents.roadmap_agent import should_continue_after_concept
+
+        # Run generation loop manually until window is full
+        max_iterations = 10  # Safety limit
+        iteration = 0
+
+        while iteration < max_iterations:
+            iteration += 1
+
+            # Check if we should continue
+            if should_continue_after_concept(initial_state) == "end":
+                logger.info("⏸️  Generation window full or complete. Stopping.")
+                break
+
+            # Build memory context
+            initial_state = await build_memory_context(initial_state)
+
+            # Generate concept content
+            initial_state = await generate_concept_content(initial_state)
+
+            # Mark concept complete
+            initial_state = mark_concept_complete(initial_state)
+
+            if initial_state.get("error"):
+                logger.error(f"❌ Error in incremental generation: {initial_state['error']}")
+                break
+
+        logger.info(
+            f"✅ Incremental generation completed for project_id={project_id} (iterations: {iteration})"
+        )
+
+        if initial_state.get("error"):
+            logger.error(f"❌ Incremental generation failed: {initial_state['error']}")
+
+    except Exception as e:
+        logger.error(f"❌ Error in incremental concept generation: {e}", exc_info=True)
+        # Don't raise - this is a background task
+
+
+def trigger_incremental_generation_sync(project_id: str):
+    """
+    Synchronous wrapper to trigger incremental concept generation.
+
+    This is used by FastAPI BackgroundTasks.
+
+    Args:
+        project_id: UUID of the project
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        loop.run_until_complete(run_incremental_concept_generation(project_id))
     finally:
         loop.close()

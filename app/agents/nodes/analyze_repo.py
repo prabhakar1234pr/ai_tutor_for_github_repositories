@@ -2,15 +2,20 @@
 Analyze repository using RAG to understand its structure and technologies.
 This node uses Qdrant embeddings to retrieve relevant code context.
 
+Uses two-stage analysis to handle large codebases and avoid payload size limits:
+- Stage 1: High-level analysis with top 6 chunks (smaller payload)
+- Stage 2: Detailed analysis with preliminary summary + remaining chunks
+
 Optimized with adaptive token budgeting to prevent token limit errors:
 - Retrieves more chunks initially (top_k=15)
 - Truncates each chunk to MAX_CHUNK_TOKENS (500)
 - Selects chunks within ANALYZE_REPO_TOKEN_BUDGET (6000)
+- Splits into two batches for two-stage LLM calls
 """
 
 import logging
 
-from app.agents.prompts import REPO_ANALYSIS_PROMPT
+from app.agents.prompts import REPO_ANALYSIS_STAGE1_PROMPT, REPO_ANALYSIS_STAGE2_PROMPT
 from app.agents.state import RepoAnalysis, RoadmapAgentState
 from app.core.supabase_client import get_supabase_client
 from app.services.embedding_service import get_embedding_service
@@ -125,9 +130,6 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
             max_chunk_tokens=MAX_CHUNK_TOKENS,
         )
 
-        # Step 1f: Build context string from selected chunks
-        code_context = build_context_from_chunks(selected_chunks)
-
         # Log stats
         total_original_tokens = sum(c.get("original_token_count", 0) for c in selected_chunks)
         total_truncated_tokens = sum(c.get("truncated_token_count", 0) for c in selected_chunks)
@@ -140,24 +142,34 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
             f"   Tokens: {total_truncated_tokens} (saved {total_original_tokens - total_truncated_tokens})"
         )
 
+        # Step 1f: Split chunks into two batches for two-stage analysis
+        # First batch: Top 5-7 chunks for high-level analysis
+        # Second batch: Remaining chunks for detailed analysis
+        FIRST_STAGE_CHUNKS = 6  # Top 6 chunks for first stage
+
+        if len(selected_chunks) <= FIRST_STAGE_CHUNKS:
+            # If we have 6 or fewer chunks, use all for Stage 1, none for Stage 2
+            first_stage_chunks = selected_chunks
+            second_stage_chunks = []
+            logger.info(
+                f"📊 Two-stage analysis: Stage 1 ({len(first_stage_chunks)} chunks), Stage 2 (0 chunks - all used in Stage 1)"
+            )
+        else:
+            first_stage_chunks = selected_chunks[:FIRST_STAGE_CHUNKS]
+            second_stage_chunks = selected_chunks[FIRST_STAGE_CHUNKS:]
+            logger.info(
+                f"📊 Two-stage analysis: Stage 1 ({len(first_stage_chunks)} chunks), Stage 2 ({len(second_stage_chunks)} chunks)"
+            )
+
     except Exception as e:
         logger.warning(f"⚠️  RAG retrieval failed: {e}. Using empty context.")
-        code_context = "No code context available."
+        first_stage_chunks = []
+        second_stage_chunks = []
 
-    # Step 2: Call Groq LLM to analyze the repository
-    logger.info("🤖 Analyzing repository structure with LLM...")
+    # Step 2: Two-stage LLM analysis
+    logger.info("🤖 Starting two-stage repository analysis with LLM...")
 
     groq_service = get_groq_service()
-
-    # Format the prompt
-    prompt = REPO_ANALYSIS_PROMPT.format(
-        github_url=github_url,
-        skill_level=skill_level,
-        target_days=target_days,
-        code_context=code_context,
-    )
-
-    # Call LLM
     system_prompt = (
         "You are an expert software engineer analyzing codebases. "
         "CRITICAL: Return ONLY valid JSON. Do NOT use markdown code blocks. "
@@ -165,36 +177,108 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
     )
 
     try:
-        # Use async version with rate limiting
-        llm_response = await groq_service.generate_response_async(
-            user_query=prompt,
-            system_prompt=system_prompt,
-            context="",  # Context already in prompt
+        # ===== STAGE 1: High-level analysis with first batch =====
+        logger.info("📊 Stage 1: High-level analysis with top chunks...")
+
+        if first_stage_chunks:
+            stage1_context = build_context_from_chunks(first_stage_chunks)
+        else:
+            stage1_context = "No code context available."
+
+        stage1_prompt = REPO_ANALYSIS_STAGE1_PROMPT.format(
+            github_url=github_url,
+            skill_level=skill_level,
+            target_days=target_days,
+            code_context=stage1_context,
         )
 
-        logger.debug(f"   LLM response length: {len(llm_response)} chars")
-        logger.debug(f"   Raw LLM response: {llm_response[:200]}...")
+        stage1_response = await groq_service.generate_response_async(
+            user_query=stage1_prompt,
+            system_prompt=system_prompt,
+            context="",
+        )
 
-        # Step 3: Parse JSON response using async parser (supports sanitizer)
+        logger.debug(f"   Stage 1 response length: {len(stage1_response)} chars")
+
+        # Parse Stage 1 response
         try:
-            analysis_dict = await parse_llm_json_response_async(
-                llm_response, expected_type="object"
+            preliminary_analysis = await parse_llm_json_response_async(
+                stage1_response, expected_type="object"
             )
+            logger.info("✅ Stage 1 complete: High-level analysis obtained")
         except Exception as parse_error:
-            logger.error(f"❌ Failed to parse JSON response: {parse_error}")
-            logger.error(f"   Original response: {llm_response[:500]}")
-            raise ValueError(f"Invalid JSON response from LLM: {parse_error}") from parse_error
+            logger.error(f"❌ Failed to parse Stage 1 JSON: {parse_error}")
+            raise ValueError(f"Invalid JSON in Stage 1: {parse_error}") from parse_error
 
-        # Step 4: Create RepoAnalysis object
+        # ===== STAGE 2: Detailed analysis with summary + remaining chunks =====
+        logger.info("📊 Stage 2: Detailed analysis with preliminary summary + remaining chunks...")
+
+        if second_stage_chunks:
+            stage2_context = build_context_from_chunks(second_stage_chunks)
+            # Format preliminary analysis as readable text
+            preliminary_text = (
+                f"Summary: {preliminary_analysis.get('summary', '')}\n"
+                f"Primary Language: {preliminary_analysis.get('primary_language', '')}\n"
+                f"Frameworks: {', '.join(preliminary_analysis.get('frameworks', []))}\n"
+                f"Architecture Patterns: {', '.join(preliminary_analysis.get('architecture_patterns', []))}\n"
+                f"Difficulty: {preliminary_analysis.get('difficulty', 'intermediate')}"
+            )
+        else:
+            # No second stage chunks, use preliminary as final
+            logger.info("   No additional chunks for Stage 2, using Stage 1 results as final")
+            stage2_context = ""
+            preliminary_text = (
+                f"Summary: {preliminary_analysis.get('summary', '')}\n"
+                f"Primary Language: {preliminary_analysis.get('primary_language', '')}\n"
+                f"Frameworks: {', '.join(preliminary_analysis.get('frameworks', []))}\n"
+                f"Architecture Patterns: {', '.join(preliminary_analysis.get('architecture_patterns', []))}\n"
+                f"Difficulty: {preliminary_analysis.get('difficulty', 'intermediate')}"
+            )
+
+        stage2_prompt = REPO_ANALYSIS_STAGE2_PROMPT.format(
+            github_url=github_url,
+            skill_level=skill_level,
+            target_days=target_days,
+            preliminary_analysis=preliminary_text,
+            code_context=stage2_context,
+        )
+
+        # Only run Stage 2 if we have additional chunks
+        if second_stage_chunks:
+            stage2_response = await groq_service.generate_response_async(
+                user_query=stage2_prompt,
+                system_prompt=system_prompt,
+                context="",
+            )
+
+            logger.debug(f"   Stage 2 response length: {len(stage2_response)} chars")
+
+            # Parse Stage 2 response
+            try:
+                final_analysis = await parse_llm_json_response_async(
+                    stage2_response, expected_type="object"
+                )
+                logger.info("✅ Stage 2 complete: Detailed analysis obtained")
+            except Exception as parse_error:
+                logger.warning(
+                    f"⚠️  Failed to parse Stage 2 JSON, using Stage 1 results: {parse_error}"
+                )
+                # Fallback to Stage 1 results
+                final_analysis = preliminary_analysis
+        else:
+            # No Stage 2, use Stage 1 results
+            final_analysis = preliminary_analysis
+
+        # Step 3: Create final RepoAnalysis object
         repo_analysis: RepoAnalysis = {
-            "summary": analysis_dict.get("summary", ""),
-            "primary_language": analysis_dict.get("primary_language", ""),
-            "frameworks": analysis_dict.get("frameworks", []),
-            "architecture_patterns": analysis_dict.get("architecture_patterns", []),
-            "difficulty": analysis_dict.get("difficulty", "intermediate"),
+            "summary": final_analysis.get("summary", ""),
+            "primary_language": final_analysis.get("primary_language", ""),
+            "frameworks": final_analysis.get("frameworks", []),
+            "architecture_patterns": final_analysis.get("architecture_patterns", []),
+            "difficulty": final_analysis.get("difficulty", "intermediate"),
         }
 
-        logger.info("✅ Repository analysis complete:")
+        logger.info("✅ Repository analysis complete (two-stage):")
         logger.info(f"   Primary Language: {repo_analysis['primary_language']}")
         logger.info(f"   Frameworks: {', '.join(repo_analysis['frameworks'])}")
         logger.info(f"   Architecture: {', '.join(repo_analysis['architecture_patterns'])}")

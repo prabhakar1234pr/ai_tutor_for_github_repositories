@@ -22,6 +22,95 @@ from app.utils.markdown_sanitizer import sanitize_markdown_content
 
 logger = logging.getLogger(__name__)
 
+
+def get_user_current_concept_from_progress(
+    project_id: str, user_id: str, concept_ids_map: dict[str, str]
+) -> str | None:
+    """
+    Determine user's current concept from user_concept_progress table.
+
+    Logic:
+    1. Find concept with status 'doing' (user is currently working on it)
+    2. If none, find most recent concept with status 'done' (last completed)
+    3. Map database concept_id to curriculum concept_id using concept_ids_map
+
+    Args:
+        project_id: Project UUID
+        user_id: User UUID
+        concept_ids_map: Map of curriculum_id -> database_id
+
+    Returns:
+        Curriculum concept_id (e.g., "c1", "c2") or None if user hasn't started
+    """
+    if not user_id or not concept_ids_map:
+        return None
+
+    supabase = get_supabase_client()
+
+    # Get all day_ids for this project
+    days_response = (
+        supabase.table("roadmap_days").select("day_id").eq("project_id", project_id).execute()
+    )
+
+    if not days_response.data:
+        return None
+
+    day_ids = [d["day_id"] for d in days_response.data]
+
+    # Get all concepts for these days
+    concepts_response = (
+        supabase.table("concepts").select("concept_id").in_("day_id", day_ids).execute()
+    )
+
+    if not concepts_response.data:
+        return None
+
+    project_concept_ids = [c["concept_id"] for c in concepts_response.data]
+
+    # Query user_concept_progress for concepts with 'doing' status
+    progress_response = (
+        supabase.table("user_concept_progress")
+        .select("concept_id, progress_status, completed_at")
+        .eq("user_id", user_id)
+        .in_("concept_id", project_concept_ids)
+        .eq("progress_status", "doing")
+        .execute()
+    )
+
+    if progress_response.data:
+        # User is currently working on a concept
+        doing_concept_id = progress_response.data[0]["concept_id"]
+        # Map database ID to curriculum ID
+        for curriculum_id, db_id in concept_ids_map.items():
+            if db_id == doing_concept_id:
+                logger.info(f"📍 User is currently working on concept: {curriculum_id}")
+                return curriculum_id
+
+    # If no 'doing' concept, find most recent 'done' concept
+    done_response = (
+        supabase.table("user_concept_progress")
+        .select("concept_id, completed_at")
+        .eq("user_id", user_id)
+        .in_("concept_id", project_concept_ids)
+        .eq("progress_status", "done")
+        .order("completed_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if done_response.data:
+        done_concept_id = done_response.data[0]["concept_id"]
+        # Map database ID to curriculum ID
+        for curriculum_id, db_id in concept_ids_map.items():
+            if db_id == done_concept_id:
+                logger.info(f"📍 User's last completed concept: {curriculum_id}")
+                return curriculum_id
+
+    # User hasn't started any concepts
+    logger.info("📍 User hasn't started any concepts yet")
+    return None
+
+
 # Import postgrest exception if available
 try:
     from postgrest.exceptions import APIError as PostgrestAPIError
@@ -71,10 +160,10 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
             "generated_status": "pending",
         }
 
-        # Include concept_ids if present (new expanded structure)
-        concept_ids = theme.get("concept_ids", [])
-        if concept_ids:
-            day_data["concept_ids"] = concept_ids
+        # Note: concept_ids are curriculum-level IDs (like "c1", "c2"), not database UUIDs
+        # We'll update days with database concept UUIDs after concepts are inserted
+        # For now, set to empty array - will be populated after concepts are saved
+        day_data["concept_ids"] = []
 
         days_to_insert.append(day_data)
 
@@ -123,13 +212,13 @@ def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     Save ALL concepts from plan_curriculum to database upfront.
 
     This replaces the old per-day concept saving approach. All concepts are
-    inserted at once with initial status 'empty', then content is generated
-    later via generate_concept_content.
+    inserted at once with initial status 'pending' (database), which maps to
+    'empty' (internal state), then content is generated later via generate_concept_content.
 
     This node:
     1. Extracts all concepts from curriculum.concepts
     2. Links each concept to its day via day_ids_map
-    3. Inserts all concepts with status='empty'
+    3. Inserts all concepts with status='pending' (database)
     4. Creates concept_ids_map: curriculum_concept_id -> database_concept_id
 
     Note: generation_queue is NOT stored in state - it is derived on demand
@@ -166,6 +255,7 @@ def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
         day_number = day["day_number"]
         for concept_id in day.get("concept_ids", []):
             concept_to_day[concept_id] = day_number
+            concept_to_day[concept_id] = day_number
 
     # Build ordered list of concept IDs (by day, then by position in day)
     ordered_concept_ids: list[str] = []
@@ -199,15 +289,16 @@ def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
                 "title": concept_metadata.get("title", concept_id),
                 "description": concept_metadata.get("objective", ""),
                 "estimated_minutes": 15,  # Default, updated during generation
-                "generated_status": "empty",
+                "generated_status": "pending",
             }
 
             # Add new curriculum metadata fields if database supports them
             # These are optional and may not exist in older schema versions
             if concept_metadata.get("repo_anchors"):
                 concept_data["repo_anchors"] = concept_metadata["repo_anchors"]
-            if concept_metadata.get("depends_on"):
-                concept_data["depends_on"] = concept_metadata["depends_on"]
+            # Note: depends_on contains curriculum-level IDs (like "c1", "c2"), not database UUIDs
+            # We'll update depends_on with database UUIDs after all concepts are inserted
+            concept_data["depends_on"] = []  # Set to empty initially, will be updated later
             if concept_metadata.get("difficulty"):
                 concept_data["difficulty"] = concept_metadata["difficulty"]
             if concept_metadata.get("objective"):
@@ -247,9 +338,77 @@ def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
         logger.info(f"✅ Inserted {len(concept_ids_map)} concepts to database")
         logger.info(f"   Concept IDs mapped: {list(concept_ids_map.keys())[:5]}...")
 
+        # Update days with database concept UUIDs
+        # Map curriculum concept_ids to database UUIDs for each day
+        if isinstance(curriculum, dict):
+            days_list = curriculum.get("days", [])
+            for day in days_list:
+                day_number = day.get("day_number")
+                day_id = day_ids_map.get(day_number) if day_number else None
+
+                if day_id:
+                    # Get curriculum concept_ids for this day
+                    curriculum_concept_ids = day.get("concept_ids", [])
+                    # Map to database UUIDs
+                    database_concept_ids = [
+                        concept_ids_map.get(cid)
+                        for cid in curriculum_concept_ids
+                        if concept_ids_map.get(cid)
+                    ]
+
+                    if database_concept_ids:
+                        # Update day with database concept UUIDs
+                        supabase.table("roadmap_days").update(
+                            {"concept_ids": database_concept_ids}
+                        ).eq("day_id", day_id).execute()
+                        logger.debug(
+                            f"   Updated day {day_number} with {len(database_concept_ids)} concept UUIDs"
+                        )
+
+        # Update concepts with database UUIDs for depends_on field
+        # Map curriculum depends_on IDs to database UUIDs
+        if isinstance(curriculum, dict):
+            concepts_dict = curriculum.get("concepts", {})
+            for curriculum_concept_id, concept_metadata in concepts_dict.items():
+                database_concept_id = concept_ids_map.get(curriculum_concept_id)
+                if not database_concept_id:
+                    continue
+
+                # Get curriculum-level depends_on IDs
+                curriculum_depends_on = concept_metadata.get("depends_on", [])
+                if curriculum_depends_on:
+                    # Map to database UUIDs
+                    database_depends_on = [
+                        concept_ids_map.get(dep_id)
+                        for dep_id in curriculum_depends_on
+                        if concept_ids_map.get(dep_id)
+                    ]
+
+                    if database_depends_on:
+                        # Update concept with database UUIDs for depends_on
+                        supabase.table("concepts").update({"depends_on": database_depends_on}).eq(
+                            "concept_id", database_concept_id
+                        ).execute()
+                        logger.debug(
+                            f"   Updated concept {curriculum_concept_id} with {len(database_depends_on)} dependencies"
+                        )
+
         # Update state
         state["concept_ids_map"] = concept_ids_map
         # Note: generation_queue is derived on demand, not stored
+
+        # Determine user's current concept from user_concept_progress table
+        project_id = state.get("project_id")
+        user_id = state.get("_user_id")
+        if user_id and project_id:
+            user_current_concept_id = get_user_current_concept_from_progress(
+                project_id=project_id,
+                user_id=user_id,
+                concept_ids_map=concept_ids_map,
+            )
+            if user_current_concept_id:
+                state["user_current_concept_id"] = user_current_concept_id
+                logger.info(f"📍 Set user_current_concept_id to: {user_current_concept_id}")
 
         return state
 
@@ -450,7 +609,7 @@ def mark_concept_complete(state: RoadmapAgentState) -> RoadmapAgentState:
     5. Checks if all concepts are complete for workflow end
 
     Expects state to have:
-    - current_concept_id: The concept that was just generated
+    - _last_generated_concept_id: The concept that was just generated (from generate_content)
     - concept_ids_map: Map of curriculum_id -> database_id
     - concept_status_map: Status tracking for concepts
 
@@ -460,15 +619,22 @@ def mark_concept_complete(state: RoadmapAgentState) -> RoadmapAgentState:
     Returns:
         Updated state with status tracking updated
     """
-    current_concept_id = state.get("user_current_concept_id")
+    # Get the concept that was just generated (not user's current position)
+    current_concept_id = state.get("_last_generated_concept_id")
     concept_ids_map = state.get("concept_ids_map", {})
     concept_status_map = state.get("concept_status_map", {})
     curriculum = state.get("curriculum", {})
     day_ids_map = state.get("day_ids_map", {})
 
     if not current_concept_id:
-        logger.warning("⚠️  No current_concept_id in state, skipping mark_concept_complete")
+        # Debug: log all state keys to help diagnose
+        logger.warning(
+            f"⚠️  No _last_generated_concept_id in state. "
+            f"Available keys: {list(state.keys())}. Skipping mark_concept_complete"
+        )
         return state
+
+    logger.debug(f"📍 Marking concept complete: {current_concept_id}")
 
     # Get database ID
     database_concept_id = concept_ids_map.get(current_concept_id)
@@ -528,8 +694,11 @@ def mark_concept_complete(state: RoadmapAgentState) -> RoadmapAgentState:
 
         # Check if all concepts are complete (derive from curriculum)
         from app.agents.utils.concept_order import (
+            SLIDING_WINDOW_AHEAD,
             are_all_concepts_complete,
             get_ordered_concept_ids,
+            get_user_current_index,
+            has_generated_up_to_window,
         )
 
         ordered_concept_ids = get_ordered_concept_ids(curriculum)
@@ -538,6 +707,26 @@ def mark_concept_complete(state: RoadmapAgentState) -> RoadmapAgentState:
         if all_complete and ordered_concept_ids:
             state["is_complete"] = True
             logger.info(f"🎉 All {len(ordered_concept_ids)} concepts generated!")
+        else:
+            # Check if sliding window is full (lazy loading pause condition)
+            user_current_concept_id = state.get("user_current_concept_id")
+            user_current_index = get_user_current_index(
+                ordered_concept_ids, user_current_concept_id
+            )
+
+            # Use updated concept_status_map from state (includes the concept we just marked complete)
+            updated_concept_status_map = state.get("concept_status_map", {})
+            window_full = has_generated_up_to_window(
+                ordered_concept_ids, updated_concept_status_map, user_current_index
+            )
+
+            if window_full:
+                state["is_paused"] = True
+                logger.info(
+                    f"⏸️  Sliding window full (n+{SLIDING_WINDOW_AHEAD}). "
+                    f"User at index {user_current_index}, generated up to index {user_current_index + SLIDING_WINDOW_AHEAD}. "
+                    f"Pausing generation. Waiting for user progress."
+                )
 
         return state
 

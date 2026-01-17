@@ -128,4 +128,11 @@ class RoadmapAgentState(TypedDict):
 
     # ===== STATUS TRACKING =====
     is_complete: bool
+    is_paused: bool  # True when generation paused due to sliding window being full
     error: str | None
+
+    # ===== INTERNAL TRACKING (for node communication) =====
+    _last_generated_concept_id: (
+        str | None
+    )  # Concept ID that was just generated (for mark_concept_complete)
+    _user_id: str | None  # User ID from project (for querying user_concept_progress)

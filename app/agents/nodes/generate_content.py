@@ -112,6 +112,10 @@ async def generate_concept_content(state: RoadmapAgentState) -> RoadmapAgentStat
 
     logger.info(f"🤖 Generating content for concept: {concept_title} ({concept_id})")
 
+    # Track the concept that was just generated (for mark_concept_complete)
+    # This is different from user_current_concept_id which represents user's position
+    state["_last_generated_concept_id"] = concept_id
+
     # Mark as generating
     concept_status_map[concept_id] = {
         "status": "generating",
@@ -119,7 +123,8 @@ async def generate_concept_content(state: RoadmapAgentState) -> RoadmapAgentStat
         "failure_reason": None,
     }
     state["concept_status_map"] = concept_status_map
-    state["user_current_concept_id"] = concept_id  # Track current concept
+    # Note: Do NOT update user_current_concept_id here - it represents the user's position,
+    # not the concept being generated. Updating it would shift the window incorrectly.
 
     # Build structured memory context for this concept
     from app.agents.utils.memory_context import (
@@ -152,6 +157,9 @@ async def generate_concept_content(state: RoadmapAgentState) -> RoadmapAgentStat
         "failure_reason": status_info.get("failure_reason"),
     }
     state["concept_status_map"] = concept_status_map
+
+    # Ensure _last_generated_concept_id is still set (in case state was reset)
+    state["_last_generated_concept_id"] = concept_id
 
     if result:
         # Validate output before persisting

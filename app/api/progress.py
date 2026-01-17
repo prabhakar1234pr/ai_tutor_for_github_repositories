@@ -10,11 +10,12 @@ Includes support for:
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from supabase import Client
 
 from app.core.supabase_client import get_supabase_client
+from app.services.roadmap_generation import trigger_incremental_generation_sync
 from app.utils.clerk_auth import verify_clerk_token
 
 router = APIRouter()
@@ -495,6 +496,7 @@ async def start_concept(
 async def complete_concept(
     project_id: str,
     concept_id: str,
+    background_tasks: BackgroundTasks,
     user_info: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_supabase_client),
 ):
@@ -526,6 +528,15 @@ async def complete_concept(
             },
             on_conflict="user_id,concept_id",
         ).execute()
+
+        # Update user_current_concept_id to the completed concept for lazy loading
+        supabase.table("projects").update({"user_current_concept_id": concept_id}).eq(
+            "project_id", project_id
+        ).execute()
+
+        # Trigger incremental concept generation (event-based)
+        logger.info(f"🔄 Triggering incremental generation after concept {concept_id} completion")
+        background_tasks.add_task(trigger_incremental_generation_sync, project_id)
 
         # Check if all concepts for the day are done
         concept_response = (
@@ -1019,6 +1030,26 @@ async def _check_and_complete_concept_if_ready(
                 },
                 on_conflict="user_id,concept_id",
             ).execute()
+
+            # Update user_current_concept_id to the completed concept for lazy loading
+            supabase.table("projects").update({"user_current_concept_id": concept_id}).eq(
+                "project_id", project_id
+            ).execute()
+
+            # Trigger incremental concept generation (event-based)
+            logger.info(
+                f"🔄 Triggering incremental generation after auto-completion of concept {concept_id}"
+            )
+            # Use asyncio.create_task since we're in an async context
+            import asyncio
+
+            from app.services.roadmap_generation import run_incremental_concept_generation
+
+            try:
+                # Create background task (fire and forget)
+                asyncio.create_task(run_incremental_concept_generation(project_id))
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to trigger incremental generation: {e}")
 
             # Check if all concepts for the day are done
             concept_response = (

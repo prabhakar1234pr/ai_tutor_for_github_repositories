@@ -21,16 +21,22 @@ from app.agents.prompts.concept_generation import CONCEPT_GENERATION_PROMPT
 from app.agents.prompts.concepts import CONCEPTS_GENERATION_PROMPT  # DEPRECATED
 from app.agents.prompts.content import CONTENT_GENERATION_PROMPT  # DEPRECATED
 from app.agents.prompts.curriculum import CURRICULUM_PLANNING_PROMPT
-from app.agents.prompts.repo_analysis import REPO_ANALYSIS_PROMPT
+from app.agents.prompts.repo_analysis import (
+    REPO_ANALYSIS_PROMPT,  # DEPRECATED: Use two-stage prompts instead
+    REPO_ANALYSIS_STAGE1_PROMPT,
+    REPO_ANALYSIS_STAGE2_PROMPT,
+)
 from app.agents.prompts.tasks import TASKS_GENERATION_PROMPT  # DEPRECATED
 
 # Re-export all prompts
 __all__ = [
     # Active prompts (v2 optimized)
-    "REPO_ANALYSIS_PROMPT",
+    "REPO_ANALYSIS_STAGE1_PROMPT",
+    "REPO_ANALYSIS_STAGE2_PROMPT",
     "CURRICULUM_PLANNING_PROMPT",
     "CONCEPT_GENERATION_PROMPT",
     # Deprecated prompts (kept for backward compatibility)
+    "REPO_ANALYSIS_PROMPT",
     "CONCEPTS_GENERATION_PROMPT",
     "CONTENT_GENERATION_PROMPT",
     "TASKS_GENERATION_PROMPT",

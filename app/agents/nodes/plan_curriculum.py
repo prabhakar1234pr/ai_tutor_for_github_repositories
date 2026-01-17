@@ -137,6 +137,19 @@ async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentStat
 
         logger.info(f"   Initialized status tracking for {len(concept_status_map)} concepts")
 
+        # Save curriculum_structure to database for incremental generation
+        project_id = state["project_id"]
+        from app.core.supabase_client import get_supabase_client
+
+        supabase = get_supabase_client()
+        try:
+            supabase.table("projects").update({"curriculum_structure": curriculum}).eq(
+                "project_id", project_id
+            ).execute()
+            logger.info("💾 Saved curriculum_structure to database")
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to save curriculum_structure to DB: {e}")
+
         # Update state
         state["curriculum"] = curriculum
         state["concept_status_map"] = concept_status_map
