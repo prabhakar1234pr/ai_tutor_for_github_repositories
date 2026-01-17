@@ -1,6 +1,12 @@
 """
-Day summary generation node.
-Creates a condensed summary of a completed day for memory context.
+DEPRECATED: Day summary generation node.
+
+This module is deprecated. Summaries are now generated inline in
+generate_concept_content at the concept level, providing more granular
+memory context for subsequent concept generation.
+
+The create_day_summary function is kept for backward compatibility
+but should not be used in new code.
 """
 
 import logging
@@ -49,12 +55,16 @@ Create a concise summary of what was learned in this day. Extract:
 """
 
 
+# DEPRECATED: Summaries are now generated inline in generate_concept_content
 async def create_day_summary(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Create a summary for the completed day and save it to day_memory_summaries.
+    DEPRECATED: Create a summary for the completed day.
 
-    This node runs after a day is marked as complete. It generates a condensed
-    summary that will be used as memory context for generating future days.
+    This function is deprecated. Summaries are now generated inline in
+    generate_concept_content at the concept level via _generate_concept_summary_inline().
+    This provides more granular memory context for subsequent concept generation.
+
+    Kept for backward compatibility only.
 
     Args:
         state: Current agent state with current_day_id and current_day_number

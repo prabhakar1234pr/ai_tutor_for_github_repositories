@@ -1,6 +1,11 @@
 """
-Recovery node to retry concepts with empty content or tasks.
-Runs after all days are generated to fill in any missing content.
+DEPRECATED: Recovery node to retry concepts with empty content or tasks.
+
+This module is deprecated. Retry logic is now integrated directly into
+generate_concept_content via the retry_wrapper utility.
+
+The recover_failed_concepts function is kept for backward compatibility
+but should not be used in new code.
 """
 
 import asyncio
@@ -14,9 +19,16 @@ from app.core.supabase_client import get_supabase_client
 logger = logging.getLogger(__name__)
 
 
+# DEPRECATED: Retry logic is now in generate_concept_content
 async def recover_failed_concepts(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Find and retry concepts that have empty content or tasks.
+    DEPRECATED: Find and retry concepts that have empty content or tasks.
+
+    This function is deprecated. Retry logic is now integrated directly into
+    generate_concept_content via the retry_wrapper utility with exponential
+    backoff and proper status tracking.
+
+    Kept for backward compatibility only.
 
     This node:
     1. Queries database for concepts with empty content or tasks

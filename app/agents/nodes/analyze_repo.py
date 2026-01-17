@@ -1,17 +1,33 @@
 """
 Analyze repository using RAG to understand its structure and technologies.
 This node uses Qdrant embeddings to retrieve relevant code context.
+
+Optimized with adaptive token budgeting to prevent token limit errors:
+- Retrieves more chunks initially (top_k=15)
+- Truncates each chunk to MAX_CHUNK_TOKENS (500)
+- Selects chunks within ANALYZE_REPO_TOKEN_BUDGET (6000)
 """
 
 import logging
 
 from app.agents.prompts import REPO_ANALYSIS_PROMPT
 from app.agents.state import RepoAnalysis, RoadmapAgentState
+from app.core.supabase_client import get_supabase_client
+from app.services.embedding_service import get_embedding_service
 from app.services.groq_service import get_groq_service
-from app.services.rag_pipeline import generate_rag_response
+from app.services.qdrant_service import get_qdrant_service
 from app.utils.json_parser import parse_llm_json_response_async
+from app.utils.token_budgeting import (
+    ANALYZE_REPO_TOKEN_BUDGET,
+    MAX_CHUNK_TOKENS,
+    build_context_from_chunks,
+    select_chunks_by_budget,
+)
 
 logger = logging.getLogger(__name__)
+
+# Retrieve more chunks than needed, then filter with token budget
+INITIAL_TOP_K = 15
 
 
 async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
@@ -37,27 +53,92 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
 
     logger.info(f"🔍 Analyzing repository: {github_url}")
 
-    # Step 1: Use RAG to get repository context
-    logger.info("📚 Retrieving repository context using RAG...")
+    # Step 1: Retrieve code chunks with adaptive token budgeting
+    logger.info("📚 Retrieving repository context with token budgeting...")
+    logger.debug(f"   Token budget: {ANALYZE_REPO_TOKEN_BUDGET}, Max per chunk: {MAX_CHUNK_TOKENS}")
 
-    # Query RAG for repository overview
+    # Query for repository overview
     rag_query = (
         "What is this project about? What technologies, frameworks, and patterns does it use? "
         "What is the overall architecture and structure?"
     )
 
     try:
-        rag_result = await generate_rag_response(
+        # Step 1a: Generate embedding for query
+        embedding_service = get_embedding_service()
+        query_embeddings = embedding_service.embed_texts([rag_query])
+
+        if not query_embeddings or len(query_embeddings) == 0:
+            raise ValueError("Failed to generate embedding for query")
+
+        query_embedding = query_embeddings[0]
+
+        # Step 1b: Search Qdrant for similar chunks (retrieve more than needed)
+        qdrant_service = get_qdrant_service()
+        search_results = qdrant_service.search(
             project_id=project_id,
-            query=rag_query,
-            top_k=10,  # Get more chunks for better context
+            query_embedding=query_embedding,
+            limit=INITIAL_TOP_K,  # Retrieve more chunks initially
         )
 
-        code_context = rag_result["response"]
-        chunks_used = rag_result.get("chunks_used", [])
+        if not search_results:
+            raise ValueError(f"No chunks found for project {project_id}")
 
-        logger.info(f"✅ Retrieved {len(chunks_used)} code chunks for analysis")
-        logger.debug(f"   Context length: {len(code_context)} chars")
+        logger.info(f"   Retrieved {len(search_results)} chunks from Qdrant (initial)")
+
+        # Step 1c: Get chunk content from Supabase
+        chunk_ids = [str(result.id) for result in search_results]
+        chunk_scores = {str(result.id): result.score for result in search_results}
+
+        supabase = get_supabase_client()
+        chunks_response = (
+            supabase.table("project_chunks")
+            .select("id, file_path, chunk_index, language, content, token_count")
+            .in_("id", chunk_ids)
+            .execute()
+        )
+
+        if not chunks_response.data:
+            raise ValueError("Chunks not found in Supabase")
+
+        # Step 1d: Build chunk list with all metadata
+        raw_chunks = []
+        for chunk_id in chunk_ids:  # Maintain order from Qdrant (by similarity)
+            chunk_data = next((c for c in chunks_response.data if str(c["id"]) == chunk_id), None)
+            if chunk_data:
+                raw_chunks.append(
+                    {
+                        "id": chunk_id,
+                        "file_path": chunk_data["file_path"],
+                        "chunk_index": chunk_data["chunk_index"],
+                        "language": chunk_data["language"],
+                        "content": chunk_data["content"],
+                        "token_count": chunk_data["token_count"],
+                        "score": chunk_scores.get(chunk_id, 0.0),
+                    }
+                )
+
+        # Step 1e: Apply token budgeting - select and truncate chunks
+        selected_chunks = select_chunks_by_budget(
+            chunks=raw_chunks,
+            token_budget=ANALYZE_REPO_TOKEN_BUDGET,
+            max_chunk_tokens=MAX_CHUNK_TOKENS,
+        )
+
+        # Step 1f: Build context string from selected chunks
+        code_context = build_context_from_chunks(selected_chunks)
+
+        # Log stats
+        total_original_tokens = sum(c.get("original_token_count", 0) for c in selected_chunks)
+        total_truncated_tokens = sum(c.get("truncated_token_count", 0) for c in selected_chunks)
+        truncated_count = sum(1 for c in selected_chunks if c.get("was_truncated", False))
+
+        logger.info("✅ Token budgeting complete:")
+        logger.info(f"   Selected: {len(selected_chunks)}/{len(raw_chunks)} chunks")
+        logger.info(f"   Truncated: {truncated_count} chunks")
+        logger.info(
+            f"   Tokens: {total_truncated_tokens} (saved {total_original_tokens - total_truncated_tokens})"
+        )
 
     except Exception as e:
         logger.warning(f"⚠️  RAG retrieval failed: {e}. Using empty context.")

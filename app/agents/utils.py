@@ -82,11 +82,12 @@ def validate_inputs(
 
 def calculate_recursion_limit(target_days: int, avg_concepts_per_day: int = 4) -> int:
     """
-    Calculate recursion limit based on workflow structure.
+    Calculate recursion limit based on workflow structure (v2 - optimized).
 
-    Structure:
-    - Each day: 1 (select) + 1 (concepts) + N concepts (subconcepts/tasks) + 1 (mark)
-    - Recovery: 1 node
+    Structure (v2):
+    - Base nodes: 5 (fetch, analyze, plan, insert_days, save_concepts)
+    - Per concept: 3 (build_memory, generate_content, mark_complete)
+    - Total concepts: target_days * avg_concepts_per_day
     - Note: Day 0 is handled separately via API endpoint, not included here
 
     Args:
@@ -96,11 +97,17 @@ def calculate_recursion_limit(target_days: int, avg_concepts_per_day: int = 4) -
     Returns:
         Calculated recursion limit with 50% buffer
     """
-    per_day_nodes = 1 + 1 + avg_concepts_per_day + 1  # select + concepts + content + mark
-    recovery_nodes = 1
+    # Base nodes (initialization + planning)
+    base_nodes = 5  # fetch, analyze, plan, insert_days, save_concepts
 
-    # Calculate base total (only for Days 1-N, Day 0 is handled separately)
-    total = (target_days * per_day_nodes) + recovery_nodes
+    # Per-concept nodes
+    nodes_per_concept = 3  # build_memory, generate_content, mark_complete
+
+    # Total concepts
+    total_concepts = target_days * avg_concepts_per_day
+
+    # Calculate total
+    total = base_nodes + (total_concepts * nodes_per_concept)
 
     # Add 50% buffer for retries, errors, and edge cases
     limit = int(total * 1.5)
@@ -111,12 +118,13 @@ def calculate_recursion_limit(target_days: int, avg_concepts_per_day: int = 4) -
         limit = min_limit
 
     # Cap at reasonable maximum
-    max_limit = 500
+    max_limit = 1000  # Increased for concept-level generation
     if limit > max_limit:
         limit = max_limit
 
     logger.info(
-        f"📊 Calculated recursion limit: {limit} (target_days={target_days}, avg_concepts={avg_concepts_per_day})"
+        f"📊 Calculated recursion limit: {limit} "
+        f"(target_days={target_days}, concepts={total_concepts}, nodes_per_concept={nodes_per_concept})"
     )
 
     return limit

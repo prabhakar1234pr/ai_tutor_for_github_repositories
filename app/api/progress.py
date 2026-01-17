@@ -1,6 +1,10 @@
 """
 API routes for user progress tracking.
 Handles day, concept, and task progress with analytics timestamps.
+
+Includes support for:
+- Lazy loading: update user_current_concept_id for sliding window generation
+- Concept-level tracking: track individual concept completion
 """
 
 import logging
@@ -19,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 class UpdateProgressRequest(BaseModel):
     progress_status: str
+
+
+class UpdateCurrentConceptRequest(BaseModel):
+    """Request to update user's current concept position for lazy loading."""
+
+    concept_id: str
 
 
 @router.get("/{project_id}")
@@ -113,6 +123,201 @@ async def get_progress(
     except Exception as e:
         logger.error(f"Error fetching progress: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch progress: {str(e)}") from e
+
+
+@router.put("/{project_id}/current-concept")
+async def update_current_concept(
+    project_id: str,
+    request: UpdateCurrentConceptRequest,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+):
+    """
+    Update the user's current concept position.
+
+    This enables lazy loading with sliding window generation:
+    - When user moves to a new concept, update their position
+    - Generation can then pre-generate concepts ahead of user position
+
+    Stores user_current_concept_id in the projects table.
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+
+        # Get user_id
+        user_response = (
+            supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        )
+        if not user_response.data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_id = user_response.data[0]["id"]
+
+        # Verify project belongs to user
+        project_response = (
+            supabase.table("projects")
+            .select("project_id")
+            .eq("project_id", project_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Verify concept exists and belongs to project
+        concept_response = (
+            supabase.table("concepts")
+            .select("concept_id, day_id")
+            .eq("concept_id", request.concept_id)
+            .execute()
+        )
+        if not concept_response.data:
+            raise HTTPException(status_code=404, detail="Concept not found")
+
+        concept = concept_response.data[0]
+
+        # Verify concept belongs to project
+        day_response = (
+            supabase.table("roadmap_days")
+            .select("project_id")
+            .eq("day_id", concept["day_id"])
+            .execute()
+        )
+        if not day_response.data or day_response.data[0]["project_id"] != project_id:
+            raise HTTPException(status_code=404, detail="Concept not found in project")
+
+        # Update user_current_concept_id in projects table
+        supabase.table("projects").update(
+            {
+                "user_current_concept_id": request.concept_id,
+            }
+        ).eq("project_id", project_id).execute()
+
+        logger.info(f"✅ Updated current concept for project {project_id}: {request.concept_id}")
+
+        return {
+            "success": True,
+            "project_id": project_id,
+            "current_concept_id": request.concept_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating current concept: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update current concept: {str(e)}"
+        ) from e
+
+
+@router.get("/{project_id}/current-concept")
+async def get_current_concept_position(
+    project_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+):
+    """
+    Get the user's current concept position for lazy loading.
+
+    Returns the concept_id stored in projects.user_current_concept_id,
+    along with concept details and position in the curriculum.
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+
+        # Get user_id
+        user_response = (
+            supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        )
+        if not user_response.data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_id = user_response.data[0]["id"]
+
+        # Get project with current concept
+        project_response = (
+            supabase.table("projects")
+            .select("project_id, user_current_concept_id")
+            .eq("project_id", project_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        project = project_response.data[0]
+        current_concept_id = project.get("user_current_concept_id")
+
+        if not current_concept_id:
+            return {
+                "success": True,
+                "project_id": project_id,
+                "current_concept_id": None,
+                "current_concept": None,
+                "position": None,
+            }
+
+        # Get concept details
+        concept_response = (
+            supabase.table("concepts")
+            .select("concept_id, title, order_index, day_id, generated_status")
+            .eq("concept_id", current_concept_id)
+            .execute()
+        )
+
+        current_concept = concept_response.data[0] if concept_response.data else None
+
+        # Get position (count of concepts before this one)
+        position = None
+        if current_concept:
+            # Get all concepts for project ordered by day and order_index
+            days_response = (
+                supabase.table("roadmap_days")
+                .select("day_id, day_number")
+                .eq("project_id", project_id)
+                .order("day_number", desc=False)
+                .execute()
+            )
+
+            if days_response.data:
+                day_ids = [d["day_id"] for d in days_response.data]
+
+                concepts_response = (
+                    supabase.table("concepts")
+                    .select("concept_id, order_index, day_id")
+                    .in_("day_id", day_ids)
+                    .order("order_index", desc=False)
+                    .execute()
+                )
+
+                if concepts_response.data:
+                    # Sort by day_number then order_index
+                    day_order = {d["day_id"]: d["day_number"] for d in days_response.data}
+                    sorted_concepts = sorted(
+                        concepts_response.data,
+                        key=lambda c: (day_order.get(c["day_id"], 0), c["order_index"]),
+                    )
+
+                    for i, c in enumerate(sorted_concepts):
+                        if c["concept_id"] == current_concept_id:
+                            position = i
+                            break
+
+        return {
+            "success": True,
+            "project_id": project_id,
+            "current_concept_id": current_concept_id,
+            "current_concept": current_concept,
+            "position": position,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting current concept: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get current concept: {str(e)}"
+        ) from e
 
 
 @router.get("/{project_id}/current")

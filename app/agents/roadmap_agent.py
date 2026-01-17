@@ -1,6 +1,19 @@
 """
 LangGraph agent for generating project roadmaps.
 This agent creates a structured learning curriculum based on a GitHub repository.
+
+Optimized workflow (v2):
+1. Fetch project context from database
+2. Analyze repository using RAG (with token budgeting)
+3. Plan curriculum (generate ALL days + concepts upfront)
+4. Insert all days to database
+5. Save all concepts to database (with status='empty')
+6. Loop: Generate concept content with lazy loading
+   a. Build memory context from state ledger
+   b. Generate content + tasks with retry
+   c. Generate inline summary
+   d. Mark concept complete
+7. End when all concepts generated
 """
 
 import logging
@@ -10,98 +23,101 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 
 from app.agents.nodes.analyze_repo import analyze_repository
-from app.agents.nodes.day_summary import create_day_summary
 from app.agents.nodes.fetch_context import fetch_project_context
-from app.agents.nodes.generate_content import (
-    generate_concepts_for_day,
-    generate_subconcepts_and_tasks,
-    select_next_incomplete_day,
-)
+from app.agents.nodes.generate_content import generate_concept_content
 from app.agents.nodes.memory_context import build_memory_context
 from app.agents.nodes.plan_curriculum import plan_and_save_curriculum
-from app.agents.nodes.recovery import recover_failed_concepts
 from app.agents.nodes.save_to_db import (
     insert_all_days_to_db,
-    mark_day_generated,
-    save_concept_content,
-    save_concepts_to_db,
+    mark_concept_complete,
+    save_all_concepts_to_db,
 )
-from app.agents.state import RoadmapAgentState
+from app.agents.state import MemoryLedger, RoadmapAgentState
 from app.agents.utils import calculate_recursion_limit, validate_inputs
 from app.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 
 
-def should_continue_generation(state: RoadmapAgentState) -> Literal["generate_content", "end"]:
+def should_continue_concept_generation(
+    state: RoadmapAgentState,
+) -> Literal["build_memory_context", "end"]:
     """
-    Conditional edge function: Check if we should continue generating days.
+    Conditional edge function: Check if we should continue generating concepts.
+
+    Uses concept-level tracking instead of day-level.
 
     Returns:
-        "generate_content" if there are more days to generate
-        "end" if all days are complete
+        "build_memory_context" if there are more concepts to generate
+        "end" if all concepts are complete or error occurred
     """
     if state.get("is_complete", False):
-        logger.info("✅ All days generated. Roadmap complete!")
+        logger.info("✅ All concepts generated. Roadmap complete!")
         return "end"
 
     if state.get("error"):
         logger.error(f"❌ Agent error: {state['error']}")
         return "end"
 
-    # Check if current_day_number is within target_days
-    current_day = state.get("current_day_number", 0)
-    target_days = state.get("target_days", 0)
+    # Check concept-level completion (derive from curriculum, not stored queue)
+    from app.agents.utils.concept_order import (
+        are_all_concepts_complete,
+        get_ordered_concept_ids,
+    )
 
-    if current_day >= target_days:
-        logger.info(f"✅ Reached target days ({target_days}). Roadmap complete!")
+    curriculum = state.get("curriculum", {})
+    concept_status_map = state.get("concept_status_map", {})
+
+    # Derive ordered concept list from curriculum
+    ordered_concept_ids = get_ordered_concept_ids(curriculum)
+
+    if not ordered_concept_ids:
+        logger.info("✅ No concepts in curriculum. Roadmap complete!")
         return "end"
 
-    return "generate_content"
+    # Check if all concepts are done
+    all_done = are_all_concepts_complete(ordered_concept_ids, concept_status_map)
+
+    if all_done:
+        logger.info(f"✅ All {len(ordered_concept_ids)} concepts generated. Roadmap complete!")
+        return "end"
+
+    return "build_memory_context"
 
 
-def should_generate_more_concepts(
+def should_continue_after_concept(
     state: RoadmapAgentState,
-) -> Literal["generate_concept_content", "mark_day_complete"]:
+) -> Literal["build_memory_context", "end"]:
     """
-    Conditional edge function: Check if we need to generate more concepts for current day.
+    Conditional edge function: Check if we should continue after marking a concept complete.
 
     Returns:
-        "generate_concept_content" if there are more concepts to fill
-        "mark_day_complete" if all concepts are generated
+        "build_memory_context" if there are more concepts to generate
+        "end" if all concepts are complete
     """
-    current_concepts = state.get("current_concepts", [])
-    current_concept_index = state.get("current_concept_index", 0)
-
-    if current_concept_index >= len(current_concepts):
-        logger.info(f"✅ All concepts generated for day {state.get('current_day_number', 0)}")
-        return "mark_day_complete"
-
-    return "generate_concept_content"
+    return should_continue_concept_generation(state)
 
 
 def build_roadmap_graph() -> StateGraph:
     """
-    Build the LangGraph DAG for roadmap generation.
+    Build the LangGraph DAG for roadmap generation (v2 - optimized).
 
     Flow:
     1. Fetch project context from database
-    2. Analyze repository using RAG
-    3. Plan curriculum (generate all day themes upfront)
+    2. Analyze repository using RAG (with token budgeting)
+    3. Plan curriculum (generate ALL days + concepts upfront)
     4. Insert all days to database (Days 1-N, Day 0 is handled separately via API)
-    5. Loop: Generate Days 1-N
-       a. Select next incomplete day
-       b. Generate concepts for day
-       c. Save concepts to database
-       d. Loop: Generate subconcepts + tasks for each concept
-       e. Save concept content
-       f. Mark day as generated
-    6. End when all days complete
+    5. Save all concepts to database (with status='empty')
+    6. Loop: Generate concept content with lazy loading
+       a. Build memory context from state ledger
+       b. Generate content + tasks with retry
+       c. Mark concept complete (updates day if all concepts done)
+    7. End when all concepts generated
 
     Returns:
         Compiled StateGraph ready to run
     """
-    logger.info("🔨 Building roadmap generation graph...")
+    logger.info("🔨 Building roadmap generation graph (v2 - optimized)...")
 
     # Create the graph
     workflow = StateGraph(RoadmapAgentState)
@@ -113,20 +129,13 @@ def build_roadmap_graph() -> StateGraph:
     # ===== PLANNING PHASE =====
     workflow.add_node("plan_curriculum", plan_and_save_curriculum)
     workflow.add_node("insert_all_days", insert_all_days_to_db)
+    workflow.add_node("save_all_concepts", save_all_concepts_to_db)
 
     # ===== CONTENT GENERATION LOOP =====
     # Note: Day 0 is handled separately via API endpoint (initialize-day0)
-    workflow.add_node("select_next_day", select_next_incomplete_day)
     workflow.add_node("build_memory_context", build_memory_context)
-    workflow.add_node("generate_concepts", generate_concepts_for_day)
-    workflow.add_node("save_concepts", save_concepts_to_db)
-    workflow.add_node("generate_concept_content", generate_subconcepts_and_tasks)
-    workflow.add_node("save_concept_content", save_concept_content)
-    workflow.add_node("mark_day_complete", mark_day_generated)
-    workflow.add_node("create_day_summary", create_day_summary)
-
-    # ===== RECOVERY PHASE =====
-    workflow.add_node("recover_failed_concepts", recover_failed_concepts)
+    workflow.add_node("generate_concept_content", generate_concept_content)
+    workflow.add_node("mark_concept_complete", mark_concept_complete)
 
     # ===== EDGES =====
 
@@ -137,61 +146,35 @@ def build_roadmap_graph() -> StateGraph:
     workflow.add_edge("fetch_context", "analyze_repo")
     workflow.add_edge("analyze_repo", "plan_curriculum")
     workflow.add_edge("plan_curriculum", "insert_all_days")
+    workflow.add_edge("insert_all_days", "save_all_concepts")
 
-    # After inserting all days, check if we need to generate content
-    # Note: Day 0 is handled separately via API endpoint
+    # After saving all concepts, check if we need to generate content
     workflow.add_conditional_edges(
-        "insert_all_days",
-        should_continue_generation,
+        "save_all_concepts",
+        should_continue_concept_generation,
         {
-            "generate_content": "select_next_day",
+            "build_memory_context": "build_memory_context",
             "end": END,
         },
     )
 
-    # Content generation loop
-    workflow.add_edge("select_next_day", "build_memory_context")
-    workflow.add_edge("build_memory_context", "generate_concepts")
-    workflow.add_edge("generate_concepts", "save_concepts")
+    # Content generation loop (concept-level)
+    workflow.add_edge("build_memory_context", "generate_concept_content")
+    workflow.add_edge("generate_concept_content", "mark_concept_complete")
 
-    # After saving concepts, loop through each concept to generate content
+    # After marking concept complete, check if more concepts needed
     workflow.add_conditional_edges(
-        "save_concepts",
-        should_generate_more_concepts,
+        "mark_concept_complete",
+        should_continue_after_concept,
         {
-            "generate_concept_content": "generate_concept_content",
-            "mark_day_complete": "mark_day_complete",
+            "build_memory_context": "build_memory_context",
+            "end": END,
         },
     )
-
-    # After generating content for a concept, save it and check if more concepts needed
-    workflow.add_edge("generate_concept_content", "save_concept_content")
-    workflow.add_conditional_edges(
-        "save_concept_content",
-        should_generate_more_concepts,
-        {
-            "generate_concept_content": "generate_concept_content",
-            "mark_day_complete": "mark_day_complete",
-        },
-    )
-
-    # After marking day complete, create summary, then check if more days needed
-    workflow.add_edge("mark_day_complete", "create_day_summary")
-    workflow.add_conditional_edges(
-        "create_day_summary",
-        should_continue_generation,
-        {
-            "generate_content": "select_next_day",
-            "end": "recover_failed_concepts",  # Go to recovery before ending
-        },
-    )
-
-    # After recovery, end the workflow
-    workflow.add_edge("recover_failed_concepts", END)
 
     # Compile the graph
     graph = workflow.compile()
-    logger.info("✅ Roadmap generation graph built successfully")
+    logger.info("✅ Roadmap generation graph built successfully (v2)")
 
     return graph
 
@@ -281,21 +264,42 @@ async def run_roadmap_agent(
                 "duration_seconds": max(0.0, time.time() - start_time),
             }
 
-        # Initialize state
+        # Initialize state with new optimized structure
+        initial_memory_ledger: MemoryLedger = {
+            "completed_concepts": [],
+            "files_touched": [],
+            "skills_unlocked": [],
+        }
+
         initial_state: RoadmapAgentState = {
+            # Input (immutable)
             "project_id": project_id,
             "github_url": github_url,
             "skill_level": skill_level,
             "target_days": target_days,
+            # Analysis results
             "repo_analysis": None,
-            "curriculum": [],
+            # Curriculum (expanded structure)
+            "curriculum": {},  # Will be: {days: [], concepts: {}, dependency_graph: {}}
+            # Concept status tracking
+            "concept_status_map": {},  # concept_id -> ConceptStatus
+            # State-based memory
+            "concept_summaries": {},  # concept_id -> summary text
+            "memory_ledger": initial_memory_ledger,
+            # Lazy loading tracking
+            "user_current_concept_id": None,
+            # Note: generation_queue is DERIVED from curriculum, not stored
+            # Current generation context (deprecated but kept for compatibility)
             "current_day_number": 0,
             "current_day_id": None,
-            "current_concepts": [],
+            "current_concepts": [],  # DEPRECATED
             "current_concept_index": 0,
+            # Memory context
             "memory_context": None,
+            # Internal state (database IDs)
             "day_ids_map": None,
-            "concept_ids_map": None,
+            "concept_ids_map": None,  # curriculum_id -> database_id
+            # Status tracking
             "is_complete": False,
             "error": None,
         }
@@ -303,10 +307,10 @@ async def run_roadmap_agent(
         # Get graph and run
         graph = get_roadmap_graph()
 
-        # Calculate recursion limit:
-        # - Each day (Days 1-N): 1 (select) + 1 (concepts) + N concepts (subconcepts/tasks) + 1 (mark complete)
-        # - Day 0 is handled separately via API endpoint, not included here
-        # - For 14 days with ~4 concepts each: ~14 * (1 + 1 + 4 + 1) = ~98 iterations
+        # Calculate recursion limit (v2):
+        # - Base: 5 (fetch, analyze, plan, insert_days, save_concepts)
+        # - Per concept: 3 (build_memory, generate_content, mark_complete)
+        # - Estimated ~4 concepts per day
         config = {"recursion_limit": calculate_recursion_limit(target_days)}
 
         # Run the graph (LangGraph handles async execution)

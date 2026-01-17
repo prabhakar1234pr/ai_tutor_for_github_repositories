@@ -2,13 +2,19 @@
 Database operations for saving roadmap content.
 All nodes that write to Supabase database.
 Saves concepts with content field and tasks with new fields (difficulty, hints, estimated_minutes).
+
+Optimized for the new curriculum structure:
+- save_all_concepts_to_db: Save ALL concepts from plan_curriculum upfront
+- mark_concept_complete: Mark individual concepts as complete
+- Supports concept-level tracking instead of day-level
 """
 
 import logging
+from typing import Any
 
 import httpx
 
-from app.agents.state import RoadmapAgentState
+from app.agents.state import ConceptStatus, RoadmapAgentState
 from app.core.supabase_client import get_supabase_client
 
 # Day 0 is handled separately via API endpoint, not imported here
@@ -27,13 +33,26 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Insert all day themes into roadmap_days table (Days 1-N only).
     Day 0 is handled separately via API endpoint (initialize-day0).
-    Includes estimated_minutes for each day.
+
+    Handles expanded curriculum structure:
+    - curriculum["days"] contains list of DayTheme objects
+    - Each day includes concept_ids linking to concepts in curriculum["concepts"]
+
+    Includes estimated_minutes and concept_ids for each day.
     """
     project_id = state["project_id"]
-    curriculum = state.get("curriculum", [])
+    curriculum = state.get("curriculum", {})
     target_days = state["target_days"]
 
-    logger.info(f"💾 Inserting {len(curriculum)} days (Days 1-{target_days}) into database...")
+    # Extract days from expanded curriculum structure
+    # Support both old format (list) and new format (dict with "days" key)
+    if isinstance(curriculum, dict):
+        days_list = curriculum.get("days", [])
+    else:
+        # Legacy format: curriculum is a list of DayTheme
+        days_list = curriculum
+
+    logger.info(f"💾 Inserting {len(days_list)} days (Days 1-{target_days - 1}) into database...")
     logger.info("   Note: Day 0 is handled separately via API endpoint")
 
     supabase = get_supabase_client()
@@ -41,18 +60,23 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     # Prepare all days to insert (Days 1-N only, Day 0 excluded)
     days_to_insert = []
 
-    # Days 1 to target_days (from curriculum)
-    for theme in curriculum:
-        days_to_insert.append(
-            {
-                "project_id": project_id,
-                "day_number": theme["day_number"],
-                "theme": theme["theme"],
-                "description": theme["description"],
-                "estimated_minutes": theme.get("estimated_minutes", 60),
-                "generated_status": "pending",
-            }
-        )
+    # Days 1 to target_days-1 (from curriculum)
+    for theme in days_list:
+        day_data = {
+            "project_id": project_id,
+            "day_number": theme["day_number"],
+            "theme": theme["theme"],
+            "description": theme.get("description", ""),
+            "estimated_minutes": theme.get("estimated_minutes", 60),
+            "generated_status": "pending",
+        }
+
+        # Include concept_ids if present (new expanded structure)
+        concept_ids = theme.get("concept_ids", [])
+        if concept_ids:
+            day_data["concept_ids"] = concept_ids
+
+        days_to_insert.append(day_data)
 
     # Insert all days
     try:
@@ -73,7 +97,14 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
             day_id = day_data["day_id"]
             day_ids_map[day_number] = day_id
 
-        logger.info(f"✅ Inserted {len(response.data)} days (Days 1-{target_days}) into database")
+        logger.info(
+            f"✅ Inserted {len(response.data)} days (Days 1-{target_days - 1}) into database"
+        )
+
+        # Log concept distribution
+        total_concepts = sum(len(d.get("concept_ids", [])) for d in days_to_insert)
+        if total_concepts > 0:
+            logger.info(f"   Total concepts across days: {total_concepts}")
 
         state["day_ids_map"] = day_ids_map
         return state
@@ -87,6 +118,149 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
 # Note: save_day0_content has been removed - Day 0 is now handled via API endpoint (initialize-day0)
 
 
+def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
+    """
+    Save ALL concepts from plan_curriculum to database upfront.
+
+    This replaces the old per-day concept saving approach. All concepts are
+    inserted at once with initial status 'empty', then content is generated
+    later via generate_concept_content.
+
+    This node:
+    1. Extracts all concepts from curriculum.concepts
+    2. Links each concept to its day via day_ids_map
+    3. Inserts all concepts with status='empty'
+    4. Creates concept_ids_map: curriculum_concept_id -> database_concept_id
+
+    Note: generation_queue is NOT stored in state - it is derived on demand
+    from curriculum using get_ordered_concept_ids().
+
+    Args:
+        state: Current agent state with curriculum and day_ids_map
+
+    Returns:
+        Updated state with concept_ids_map (generation_queue is derived, not stored)
+    """
+    curriculum = state.get("curriculum", {})
+    day_ids_map = state.get("day_ids_map", {})
+
+    # Extract concepts from curriculum
+    if isinstance(curriculum, dict):
+        concepts_dict = curriculum.get("concepts", {})
+        days_list = curriculum.get("days", [])
+    else:
+        logger.warning("⚠️  Curriculum is not in expanded format, cannot save concepts")
+        state["concept_ids_map"] = {}
+        return state
+
+    if not concepts_dict:
+        logger.warning("⚠️  No concepts found in curriculum")
+        state["concept_ids_map"] = {}
+        return state
+
+    logger.info(f"💾 Saving {len(concepts_dict)} concepts to database...")
+
+    # Build concept_id -> day_id mapping
+    concept_to_day: dict[str, int] = {}
+    for day in days_list:
+        day_number = day["day_number"]
+        for concept_id in day.get("concept_ids", []):
+            concept_to_day[concept_id] = day_number
+
+    # Build ordered list of concept IDs (by day, then by position in day)
+    ordered_concept_ids: list[str] = []
+    for day in sorted(days_list, key=lambda d: d["day_number"]):
+        for concept_id in day.get("concept_ids", []):
+            if concept_id in concepts_dict:
+                ordered_concept_ids.append(concept_id)
+
+    # Add any concepts not assigned to days
+    for concept_id in concepts_dict:
+        if concept_id not in ordered_concept_ids:
+            ordered_concept_ids.append(concept_id)
+
+    supabase = get_supabase_client()
+
+    try:
+        # Prepare concepts for insertion
+        concepts_to_insert = []
+
+        for order_index, concept_id in enumerate(ordered_concept_ids):
+            concept_metadata = concepts_dict[concept_id]
+            day_number = concept_to_day.get(concept_id)
+            day_id = day_ids_map.get(day_number) if day_number else None
+
+            if not day_id and day_number:
+                logger.warning(f"⚠️  Day ID not found for day {day_number}, concept {concept_id}")
+
+            concept_data: dict[str, Any] = {
+                "day_id": day_id,
+                "order_index": order_index,
+                "title": concept_metadata.get("title", concept_id),
+                "description": concept_metadata.get("objective", ""),
+                "estimated_minutes": 15,  # Default, updated during generation
+                "generated_status": "empty",
+            }
+
+            # Add new curriculum metadata fields if database supports them
+            # These are optional and may not exist in older schema versions
+            if concept_metadata.get("repo_anchors"):
+                concept_data["repo_anchors"] = concept_metadata["repo_anchors"]
+            if concept_metadata.get("depends_on"):
+                concept_data["depends_on"] = concept_metadata["depends_on"]
+            if concept_metadata.get("difficulty"):
+                concept_data["difficulty"] = concept_metadata["difficulty"]
+            if concept_metadata.get("objective"):
+                concept_data["objective"] = concept_metadata["objective"]
+
+            concepts_to_insert.append(
+                {
+                    "curriculum_id": concept_id,  # Track original ID
+                    "data": concept_data,
+                }
+            )
+
+        # Insert concepts in batches (Supabase can handle ~100 at a time)
+        BATCH_SIZE = 50
+        concept_ids_map: dict[str, str] = {}  # curriculum_id -> database_id
+
+        for i in range(0, len(concepts_to_insert), BATCH_SIZE):
+            batch = concepts_to_insert[i : i + BATCH_SIZE]
+
+            # Extract just the data for insertion
+            batch_data = [c["data"] for c in batch]
+            batch_curriculum_ids = [c["curriculum_id"] for c in batch]
+
+            response = supabase.table("concepts").insert(batch_data).execute()
+
+            if not response.data:
+                raise ValueError(f"Failed to insert concepts batch {i // BATCH_SIZE + 1}")
+
+            # Map curriculum IDs to database IDs
+            for j, concept_data in enumerate(response.data):
+                curriculum_id = batch_curriculum_ids[j]
+                database_id = concept_data["concept_id"]
+                concept_ids_map[curriculum_id] = database_id
+
+            logger.debug(f"   Inserted batch {i // BATCH_SIZE + 1} ({len(batch)} concepts)")
+
+        logger.info(f"✅ Inserted {len(concept_ids_map)} concepts to database")
+        logger.info(f"   Concept IDs mapped: {list(concept_ids_map.keys())[:5]}...")
+
+        # Update state
+        state["concept_ids_map"] = concept_ids_map
+        # Note: generation_queue is derived on demand, not stored
+
+        return state
+
+    except Exception as e:
+        logger.error(f"❌ Failed to save concepts: {e}", exc_info=True)
+        state["error"] = f"Failed to save all concepts: {str(e)}"
+        state["concept_ids_map"] = {}
+        return state
+
+
+# DEPRECATED: Use save_all_concepts_to_db instead
 def save_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Save concept titles to database (before generating content/tasks).
@@ -262,9 +436,176 @@ def save_concept_content(state: RoadmapAgentState) -> RoadmapAgentState:
         return state
 
 
+def mark_concept_complete(state: RoadmapAgentState) -> RoadmapAgentState:
+    """
+    Mark a single concept as complete and update related state.
+
+    This replaces mark_day_generated for concept-level tracking.
+
+    This node:
+    1. Updates concept status to 'ready' (or 'generated_with_errors') in database
+    2. Updates concept_status_map in state
+    3. Checks if all concepts in the day are complete
+    4. If day complete, marks day as 'generated'
+    5. Checks if all concepts are complete for workflow end
+
+    Expects state to have:
+    - current_concept_id: The concept that was just generated
+    - concept_ids_map: Map of curriculum_id -> database_id
+    - concept_status_map: Status tracking for concepts
+
+    Args:
+        state: Current agent state
+
+    Returns:
+        Updated state with status tracking updated
+    """
+    current_concept_id = state.get("user_current_concept_id")
+    concept_ids_map = state.get("concept_ids_map", {})
+    concept_status_map = state.get("concept_status_map", {})
+    curriculum = state.get("curriculum", {})
+    day_ids_map = state.get("day_ids_map", {})
+
+    if not current_concept_id:
+        logger.warning("⚠️  No current_concept_id in state, skipping mark_concept_complete")
+        return state
+
+    # Get database ID
+    database_concept_id = concept_ids_map.get(current_concept_id)
+    if not database_concept_id:
+        logger.warning(f"⚠️  Database ID not found for concept {current_concept_id}")
+        return state
+
+    # Get current status from status map
+    current_status = concept_status_map.get(current_concept_id, {})
+    status_value = current_status.get("status", "ready")
+
+    # Map internal status to database status
+    if status_value == "failed":
+        db_status = "generated_with_errors"
+    elif status_value == "generated_with_errors":
+        db_status = "generated_with_errors"
+    else:
+        db_status = "generated"  # 'ready' -> 'generated' in database
+
+    logger.info(f"✅ Marking concept {current_concept_id} as {db_status}...")
+
+    supabase = get_supabase_client()
+
+    try:
+        # Update concept status in database
+        update_data: dict[str, Any] = {"generated_status": db_status}
+
+        # Add failure reason if present
+        if current_status.get("failure_reason"):
+            update_data["failure_reason"] = current_status["failure_reason"]
+        if current_status.get("attempt_count"):
+            update_data["attempt_count"] = current_status["attempt_count"]
+
+        supabase.table("concepts").update(update_data).eq(
+            "concept_id", database_concept_id
+        ).execute()
+
+        logger.info(f"✅ Concept {current_concept_id} marked as {db_status}")
+
+        # Update status in state
+        concept_status_map[current_concept_id] = {
+            "status": "ready" if db_status == "generated" else "generated_with_errors",
+            "attempt_count": current_status.get("attempt_count", 1),
+            "failure_reason": current_status.get("failure_reason"),
+        }
+        state["concept_status_map"] = concept_status_map
+
+        # Check if all concepts in the day are complete
+        _check_and_mark_day_complete(
+            state=state,
+            concept_id=current_concept_id,
+            curriculum=curriculum,
+            day_ids_map=day_ids_map,
+            concept_status_map=concept_status_map,
+            supabase=supabase,
+        )
+
+        # Check if all concepts are complete (derive from curriculum)
+        from app.agents.utils.concept_order import (
+            are_all_concepts_complete,
+            get_ordered_concept_ids,
+        )
+
+        ordered_concept_ids = get_ordered_concept_ids(curriculum)
+        all_complete = are_all_concepts_complete(ordered_concept_ids, concept_status_map)
+
+        if all_complete and ordered_concept_ids:
+            state["is_complete"] = True
+            logger.info(f"🎉 All {len(ordered_concept_ids)} concepts generated!")
+
+        return state
+
+    except Exception as e:
+        logger.error(f"❌ Failed to mark concept complete: {e}", exc_info=True)
+        # Don't fail the workflow, continue
+        return state
+
+
+def _check_and_mark_day_complete(
+    state: RoadmapAgentState,
+    concept_id: str,
+    curriculum: dict,
+    day_ids_map: dict[int, str],
+    concept_status_map: dict[str, ConceptStatus],
+    supabase: Any,
+) -> None:
+    """
+    Check if all concepts in a day are complete and mark day as generated.
+
+    Args:
+        state: Agent state
+        concept_id: The concept that was just completed
+        curriculum: Curriculum structure
+        day_ids_map: Map of day_number -> day_id
+        concept_status_map: Status tracking for concepts
+        supabase: Supabase client
+    """
+    days_list = curriculum.get("days", [])
+
+    # Find which day this concept belongs to
+    day_number = None
+    day_concept_ids = []
+
+    for day in days_list:
+        if concept_id in day.get("concept_ids", []):
+            day_number = day["day_number"]
+            day_concept_ids = day.get("concept_ids", [])
+            break
+
+    if not day_number or not day_concept_ids:
+        return
+
+    # Check if all concepts in the day are complete
+    all_day_complete = all(
+        concept_status_map.get(cid, {}).get("status")
+        in ("ready", "generated_with_errors", "failed")
+        for cid in day_concept_ids
+    )
+
+    if all_day_complete:
+        day_id = day_ids_map.get(day_number)
+        if day_id:
+            try:
+                supabase.table("roadmap_days").update({"generated_status": "generated"}).eq(
+                    "day_id", day_id
+                ).execute()
+
+                logger.info(f"✅ Day {day_number} marked as generated (all concepts complete)")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to mark day {day_number} as generated: {e}")
+
+
+# DEPRECATED: Use mark_concept_complete instead
 def mark_day_generated(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Mark the current day as fully generated.
+    DEPRECATED: Mark the current day as fully generated.
+    Use mark_concept_complete instead for concept-level tracking.
     """
     day_id = state.get("current_day_id")
     current_day_number = state.get("current_day_number", 0)

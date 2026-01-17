@@ -1,180 +1,149 @@
 """
 Memory context building node.
-Aggregates previous days' summaries to provide continuity in learning.
+Builds context from state-based memory ledger (no database queries).
+
+Optimized for the new curriculum structure:
+- Uses memory_ledger from state instead of database queries
+- Uses concept_summaries from state for summary text
+- References completed concepts, skills unlocked, files touched
 """
 
 import logging
 
 from app.agents.state import RoadmapAgentState
-from app.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
+
+# Configuration
+MAX_COMPLETED_CONCEPTS_IN_CONTEXT = 5  # Last N concepts to include in context
 
 
 def build_memory_context(state: RoadmapAgentState) -> RoadmapAgentState:
     """
-    Build memory context from previous days' summaries.
+    Build memory context from state-based memory ledger.
 
-    This node aggregates summaries from completed days to provide context
-    for generating the current day's content. It ensures continuity in the
-    learning progression.
+    This node builds context from in-memory state instead of database queries,
+    making it faster and more consistent with the current generation flow.
+
+    Uses:
+    - state.memory_ledger: Structured memory with completed_concepts, files_touched, skills_unlocked
+    - state.concept_summaries: Map of concept_id -> summary text
+    - state.curriculum: For concept titles and metadata
 
     Args:
-        state: Current agent state with current_day_number and current_day_id
+        state: Current agent state
 
     Returns:
         Updated state with memory_context field populated
     """
-    project_id = state.get("project_id")
-    current_day_number = state.get("current_day_number", 0)
-    current_day_id = state.get("current_day_id")
+    memory_ledger = state.get("memory_ledger", {})
+    concept_summaries = state.get("concept_summaries", {})
+    curriculum = state.get("curriculum", {})
 
-    logger.info(f"🧠 Building memory context for Day {current_day_number}")
+    logger.info("🧠 Building memory context from state ledger...")
 
-    # For Day 1, there's no previous context
-    if current_day_number <= 1:
-        logger.info("   No previous days to aggregate (Day 1 or earlier)")
+    # Get structured data from memory ledger
+    completed_concepts = memory_ledger.get("completed_concepts", [])
+    files_touched = memory_ledger.get("files_touched", [])
+    skills_unlocked = memory_ledger.get("skills_unlocked", [])
+
+    # If no completed concepts, no memory context needed
+    if not completed_concepts:
+        logger.info("   No completed concepts yet, skipping memory context")
         state["memory_context"] = None
         return state
 
-    if not current_day_id:
-        logger.warning("   current_day_id not found, skipping memory context")
-        state["memory_context"] = None
-        return state
+    # Get concept metadata from curriculum
+    concepts_dict = curriculum.get("concepts", {}) if isinstance(curriculum, dict) else {}
 
-    try:
-        supabase = get_supabase_client()
+    # Build memory context
+    memory_parts = []
 
-        # First, get all previous days from roadmap_days
-        previous_days_response = (
-            supabase.table("roadmap_days")
-            .select("day_id, day_number, theme")
-            .eq("project_id", project_id)
-            .lt("day_number", current_day_number)
-            .order("day_number", desc=False)
-            .execute()
-        )
+    # Section 1: Recent Completed Concepts (last N)
+    recent_concepts = completed_concepts[-MAX_COMPLETED_CONCEPTS_IN_CONTEXT:]
 
-        if not previous_days_response.data or len(previous_days_response.data) == 0:
-            logger.info("   No previous days found")
-            state["memory_context"] = None
-            return state
+    if recent_concepts:
+        memory_parts.append("=== Recently Completed Concepts ===")
 
-        previous_days = previous_days_response.data
-        day_ids = [day["day_id"] for day in previous_days]
+        for concept_id in recent_concepts:
+            concept_meta = concepts_dict.get(concept_id, {})
+            title = concept_meta.get("title", concept_id)
+            summary = concept_summaries.get(concept_id, "")
 
-        # Get summaries for those days
-        summaries_response = (
-            supabase.table("day_memory_summaries")
-            .select(
-                "day_id, summary_text, concepts_list, skills_acquired, code_examples_reference, created_at"
-            )
-            .eq("project_id", project_id)
-            .in_("day_id", day_ids)
-            .execute()
-        )
+            memory_parts.append(f"\n**{title}**")
+            if summary:
+                memory_parts.append(f"{summary}")
+            elif concept_meta.get("objective"):
+                memory_parts.append(f"Objective: {concept_meta['objective']}")
 
-        if not summaries_response.data or len(summaries_response.data) == 0:
-            logger.info("   No previous day summaries found")
-            state["memory_context"] = None
-            return state
+        memory_parts.append("")
 
-        # Create a map of day_id to summary
-        summaries_map = {s["day_id"]: s for s in summaries_response.data}
+    # Section 2: Skills Unlocked
+    if skills_unlocked:
+        memory_parts.append("=== Skills Acquired ===")
+        # Deduplicate and limit
+        unique_skills = list(dict.fromkeys(skills_unlocked))[-15:]  # Last 15 unique skills
+        memory_parts.append(", ".join(unique_skills))
+        memory_parts.append("")
 
-        # Build structured memory context, ordered by day number
-        memory_parts = []
+    # Section 3: Files Explored
+    if files_touched:
+        memory_parts.append("=== Files Explored ===")
+        # Deduplicate and limit
+        unique_files = list(dict.fromkeys(files_touched))[-10:]  # Last 10 unique files
+        for file_path in unique_files:
+            memory_parts.append(f"- {file_path}")
+        memory_parts.append("")
 
-        for day in previous_days:
-            day_id = day["day_id"]
-            day_number = day["day_number"]
-            day_theme = day["theme"]
+    # Section 4: Learning Progress Summary
+    total_completed = len(completed_concepts)
+    total_skills = len(set(skills_unlocked))
+    total_files = len(set(files_touched))
 
-            summary_data = summaries_map.get(day_id)
-            if not summary_data:
-                # Skip days without summaries
-                continue
+    memory_parts.append("=== Learning Progress ===")
+    memory_parts.append(f"Concepts completed: {total_completed}")
+    memory_parts.append(f"Skills acquired: {total_skills}")
+    memory_parts.append(f"Files explored: {total_files}")
 
-            memory_parts.append(f"=== Day {day_number}: {day_theme} ===")
-            memory_parts.append(f"Summary: {summary_data.get('summary_text', 'No summary')}")
+    # Combine into final memory context string
+    memory_context = "\n".join(memory_parts).strip()
 
-            concepts = summary_data.get("concepts_list", [])
-            if concepts:
-                memory_parts.append(f"Concepts Learned: {', '.join(concepts)}")
+    logger.info(f"✅ Memory context built ({len(memory_context)} chars)")
+    logger.info(f"   Concepts: {total_completed}, Skills: {total_skills}, Files: {total_files}")
 
-            skills = summary_data.get("skills_acquired", [])
-            if skills:
-                memory_parts.append(f"Skills Acquired: {', '.join(skills)}")
+    state["memory_context"] = memory_context
 
-            code_examples = summary_data.get("code_examples_reference", "")
-            if code_examples:
-                memory_parts.append(f"Key Code Patterns: {code_examples}")
-
-            memory_parts.append("")  # Empty line between days
-
-        # Combine into final memory context string
-        memory_context = "\n".join(memory_parts).strip()
-
-        # Optionally enhance with vector DB retrieval (if available)
-        try:
-            vector_context = _retrieve_vector_context(
-                project_id=project_id,
-                current_day_number=current_day_number,
-            )
-            if vector_context:
-                memory_context = f"{memory_context}\n\n=== Relevant Context from Previous Days ===\n{vector_context}"
-        except Exception as e:
-            logger.debug(f"   Vector DB retrieval failed (non-critical): {e}")
-            # Continue without vector context - database summaries are primary
-
-        logger.info(f"   ✅ Memory context built ({len(memory_context)} chars)")
-        state["memory_context"] = memory_context
-
-        return state
-
-    except Exception as e:
-        logger.error(f"❌ Failed to build memory context: {e}", exc_info=True)
-        # Don't fail the workflow - memory context is helpful but not critical
-        state["memory_context"] = None
-        return state
+    return state
 
 
-def _retrieve_vector_context(project_id: str, current_day_number: int) -> str | None:
+def build_memory_context_for_concept(
+    state: RoadmapAgentState,
+    target_concept_id: str,
+) -> dict:
     """
-    Retrieve relevant context from vector database using semantic search.
+    Build structured memory context for a specific concept.
 
-    This is a secondary source of memory context. If vector DB is not available
-    or fails, the function returns None and the workflow continues with
-    database summaries only.
+    DEPRECATED: Returns structured dict instead of prose to avoid hallucination drift.
+    Use app.agents.utils.memory_context.build_structured_memory_context() instead.
+
+    This function is kept for backward compatibility but delegates to the new implementation.
 
     Args:
-        project_id: Project UUID
-        current_day_number: Current day number
+        state: Current agent state
+        target_concept_id: The concept being generated
 
     Returns:
-        Optional string with relevant context, or None if unavailable
+        Structured memory context dict (not prose string)
     """
-    try:
-        # Query for relevant concept content from previous days
-        # This would require storing concept embeddings in Qdrant
-        # For now, return None - this is a placeholder for future enhancement
+    from app.agents.utils.memory_context import build_structured_memory_context
 
-        # TODO: Implement vector search when concept embeddings are stored
-        # Example query structure:
-        # results = qdrant.search(
-        #     collection_name="concept_embeddings",
-        #     query_vector=current_day_theme_embedding,
-        #     query_filter=Filter(
-        #         must=[
-        #             FieldCondition(key="project_id", match=MatchValue(value=project_id)),
-        #             FieldCondition(key="day_number", range=Range(lt=current_day_number)),
-        #         ]
-        #     ),
-        #     limit=5
-        # )
+    return build_structured_memory_context(state, target_concept_id)
 
-        return None
 
-    except Exception as e:
-        logger.debug(f"Vector DB retrieval skipped: {e}")
-        return None
+# DEPRECATED: Legacy function for backward compatibility
+def _retrieve_vector_context(project_id: str, current_day_number: int) -> str | None:
+    """
+    DEPRECATED: Vector context retrieval is no longer used.
+    Memory context is now built from state-based memory ledger.
+    """
+    return None

@@ -14,6 +14,7 @@ from app.api.projects import router as projects_router
 from app.api.roadmap import router as roadmap_router
 from app.api.routes import router
 from app.api.task_sessions import router as task_sessions_router
+from app.api.task_verification import router as task_verification_router
 from app.api.terminal import router as terminal_router
 from app.api.users import router as users_router
 from app.api.workspaces import router as workspaces_router
@@ -126,3 +127,4 @@ app.include_router(terminal_router, prefix="/api/terminal", tags=["terminal"])
 app.include_router(github_consent_router, prefix="/api/github", tags=["github"])
 app.include_router(git_router, prefix="/api/git", tags=["git"])
 app.include_router(task_sessions_router, prefix="/api/task-sessions", tags=["task-sessions"])
+app.include_router(task_verification_router, prefix="/api/tasks", tags=["task-verification"])

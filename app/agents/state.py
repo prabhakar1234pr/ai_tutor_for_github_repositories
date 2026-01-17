@@ -16,12 +16,47 @@ class RepoAnalysis(TypedDict):
     difficulty: str
 
 
+class ConceptStatus(TypedDict):
+    """Status tracking for concept generation"""
+
+    status: Literal["empty", "generating", "ready", "generated_with_errors", "failed"]
+    attempt_count: int
+    failure_reason: str | None
+
+
+class MemoryLedger(TypedDict):
+    """Structured memory tracking for completed concepts"""
+
+    completed_concepts: list[str]  # concept IDs that are completed
+    files_touched: list[str]  # file paths from repo_anchors
+    skills_unlocked: list[str]  # skills acquired from concepts
+
+
+class ConceptMetadata(TypedDict):
+    """Metadata for a learning concept (from curriculum planning)"""
+
+    title: str
+    objective: str
+    repo_anchors: list[str]
+    depends_on: list[str]
+    difficulty: Literal["easy", "medium", "hard"]
+
+
 class DayTheme(TypedDict):
     """Theme for a single day in the curriculum"""
 
     day_number: int
     theme: str
     description: str
+    concept_ids: list[str]  # IDs of concepts in this day
+
+
+class Curriculum(TypedDict, total=False):
+    """Complete curriculum structure with days, concepts, and dependency graph"""
+
+    days: list[DayTheme]
+    concepts: dict[str, ConceptMetadata]
+    dependency_graph: dict[str, list[str]]
 
 
 class TaskData(TypedDict):
@@ -64,12 +99,24 @@ class RoadmapAgentState(TypedDict):
     repo_analysis: RepoAnalysis | None
 
     # ===== CURRICULUM (Generated once upfront) =====
-    curriculum: list[DayTheme]
+    # Expanded structure: {days: [], concepts: {}, dependency_graph: {}}
+    curriculum: Curriculum
+
+    # ===== CONCEPT STATUS TRACKING =====
+    concept_status_map: dict[str, ConceptStatus]  # concept_id -> status tracking
+
+    # ===== STATE-BASED MEMORY =====
+    concept_summaries: dict[str, str]  # concept_id -> summary text
+    memory_ledger: MemoryLedger  # Structured memory tracking
+
+    # ===== LAZY LOADING TRACKING =====
+    user_current_concept_id: str | None  # Current concept user is on
+    # Note: generation_queue is DERIVED from curriculum, not stored in state
 
     # ===== CURRENT GENERATION CONTEXT =====
     current_day_number: int
     current_day_id: str | None
-    current_concepts: list[ConceptData]
+    current_concepts: list[ConceptData]  # DEPRECATED: concepts now in curriculum
     current_concept_index: int
 
     # ===== MEMORY CONTEXT =====
@@ -77,7 +124,7 @@ class RoadmapAgentState(TypedDict):
 
     # ===== INTERNAL STATE (Database IDs) =====
     day_ids_map: dict[int, str] | None
-    concept_ids_map: dict[int, str] | None
+    concept_ids_map: dict[str, str] | None  # Updated: concept_id (str) -> database_id (str)
 
     # ===== STATUS TRACKING =====
     is_complete: bool
