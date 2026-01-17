@@ -44,7 +44,7 @@ async def get_progress(
 
         # Verify project belongs to user
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("project_id")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
@@ -663,7 +663,7 @@ async def complete_task(
                 )
 
         if project_updates:
-            supabase.table("Projects").update(project_updates).eq("project_id", project_id).eq(
+            supabase.table("projects").update(project_updates).eq("project_id", project_id).eq(
                 "user_id", user_id
             ).execute()
 

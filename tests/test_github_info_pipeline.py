@@ -90,7 +90,7 @@ def mock_supabase_for_pipeline(monkeypatch, sample_project_data):
             # Mock user lookup
             chain.execute.return_value.data = [{"id": sample_project_data["user_id"]}]
             mock_table.select.return_value = chain
-        elif table_name == "Projects":
+        elif table_name == "projects":
             # Mock project lookup
             chain.execute.return_value.data = [
                 {
@@ -161,7 +161,7 @@ class TestTask1GitHubProfile:
         mock_clerk_user,
         sample_project_data,
     ):
-        """Test completing Task 1 stores github_username in Projects table"""
+        """Test completing Task 1 stores github_username in projects table"""
         # Setup: Task 1 exists
         mock_supabase_for_pipeline.table.side_effect = self._create_table_mock_for_task1(
             sample_project_data
@@ -184,7 +184,7 @@ class TestTask1GitHubProfile:
             assert data["success"] is True
 
             # Verify update was called with github_username
-            # Check that Projects table was accessed and update was called
+            # Check that projects table was accessed and update was called
             projects_table_calls = [
                 call
                 for call in mock_supabase_for_pipeline.table.call_args_list
@@ -194,7 +194,7 @@ class TestTask1GitHubProfile:
 
             # Get the Projects table mock
             for call in mock_supabase_for_pipeline.table.call_args_list:
-                if call[0][0] == "Projects":
+                if call[0][0] == "projects":
                     # Get the return value (the mock table)
                     _projects_table = (
                         mock_supabase_for_pipeline.table.return_value
@@ -202,7 +202,7 @@ class TestTask1GitHubProfile:
                         else None
                     )
 
-            # Alternative: Check that update was called on any Projects table mock
+            # Alternative: Check that update was called on any projects table mock
             # The update happens in the code, so we verify the response instead
             # The actual database update is tested via the success response
 
@@ -270,7 +270,7 @@ class TestTask1GitHubProfile:
                 chain.execute.return_value.data = [{"project_id": sample_data["project_id"]}]
             elif table_name == "user_task_progress":
                 chain.execute.return_value.data = []
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 chain.execute.return_value.data = [
                     {"project_id": sample_data["project_id"], "user_id": sample_data["user_id"]}
                 ]
@@ -352,7 +352,7 @@ class TestTask2CreateRepo:
                 chain.execute.return_value.data = [{"project_id": sample_data["project_id"]}]
             elif table_name == "user_task_progress":
                 chain.execute.return_value.data = []
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 chain.execute.return_value.data = [
                     {"project_id": sample_data["project_id"], "user_id": sample_data["user_id"]}
                 ]
@@ -410,7 +410,7 @@ class TestTask2_5GitHubConsent:
                     mock_permissions.return_value = (True, True)
 
                     # Mock successful update
-                    projects_table = mock_supabase_for_pipeline.table("Projects")
+                    projects_table = mock_supabase_for_pipeline.table("projects")
                     update_chain = Mock()
                     update_chain.eq = Mock(return_value=update_chain)
                     update_chain.execute.return_value = Mock(
@@ -779,7 +779,7 @@ class TestTask2_5GitHubConsent:
 
             if table_name == "User":
                 chain.execute.return_value.data = [{"id": sample_data["user_id"]}]
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 chain.execute.return_value.data = [
                     {
                         "project_id": sample_data["project_id"],
@@ -807,7 +807,7 @@ class TestTask2_5GitHubConsent:
 
             if table_name == "User":
                 chain.execute.return_value.data = [{"id": sample_data["user_id"]}]
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 chain.execute.return_value.data = [
                     {
                         "project_id": sample_data["project_id"],
@@ -833,7 +833,7 @@ class TestTask2_5GitHubConsent:
 
             if table_name == "User":
                 chain.execute.return_value.data = [{"id": sample_data["user_id"]}]
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 chain.execute.return_value.data = [
                     {
                         "project_id": sample_data["project_id"],
@@ -860,7 +860,7 @@ class TestTask2_5GitHubConsent:
 
             if table_name == "User":
                 chain.execute.return_value.data = [{"id": sample_data["user_id"]}]
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 chain.execute.return_value.data = [
                     {
                         "project_id": sample_data["project_id"],
@@ -888,7 +888,7 @@ class TestTask3VerifyCommit:
         mock_clerk_user,
         sample_project_data,
     ):
-        """Test completing Task 3 stores user_repo_first_commit in Projects table"""
+        """Test completing Task 3 stores user_repo_first_commit in projects table"""
         # Setup: Task 3 exists
         mock_supabase_for_pipeline.table.side_effect = self._create_table_mock_for_task3(
             sample_project_data
@@ -947,7 +947,7 @@ class TestTask3VerifyCommit:
                 chain.execute.return_value.data = [{"project_id": sample_data["project_id"]}]
             elif table_name == "user_task_progress":
                 chain.execute.return_value.data = []
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 chain.execute.return_value.data = [
                     {"project_id": sample_data["project_id"], "user_id": sample_data["user_id"]}
                 ]

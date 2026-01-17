@@ -303,7 +303,7 @@ async def store_github_consent(
         }
 
         result = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .update(update_data)
             .eq("project_id", request.project_id)
             .eq("user_id", user_id)

@@ -178,7 +178,7 @@ class TestProjectChunksEmbeddingsAPI:
         def table_side_effect(table_name):
             call_count[0] += 1
             if call_count[0] == 1:
-                # First call - Projects table
+                # First call - projects table
                 mock_table1 = Mock()
                 mock_table1.select.return_value = mock_select_chain1
                 return mock_table1

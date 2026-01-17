@@ -142,7 +142,7 @@ class TestProjectsAPI:
 
         # Override for second call
         def table_side_effect(table_name):
-            if table_name == "Projects":
+            if table_name == "projects":
                 mock_table2 = Mock()
                 mock_table2.select.return_value = mock_select_chain2
                 return mock_table2
@@ -188,7 +188,7 @@ class TestProjectsAPI:
         mock_select_chain2.execute.return_value.data = []
 
         def table_side_effect(table_name):
-            if table_name == "Projects":
+            if table_name == "projects":
                 mock_table2 = Mock()
                 mock_table2.select.return_value = mock_select_chain2
                 return mock_table2
@@ -232,7 +232,7 @@ class TestProjectsAPI:
         ]
 
         def table_side_effect(table_name):
-            if table_name == "Projects":
+            if table_name == "projects":
                 mock_table2 = Mock()
                 mock_table2.select.return_value = mock_select_chain2
                 return mock_table2
@@ -286,7 +286,7 @@ class TestProjectsAPI:
         mock_delete_chain.execute.return_value = Mock()
 
         def table_side_effect(table_name):
-            if table_name == "Projects":
+            if table_name == "projects":
                 mock_table2 = Mock()
                 mock_table2.select.return_value = mock_select_chain2
                 mock_table2.delete.return_value = mock_delete_chain
@@ -338,7 +338,7 @@ class TestProjectsAPI:
         mock_select_chain2.execute.return_value.data = []
 
         def table_side_effect(table_name):
-            if table_name == "Projects":
+            if table_name == "projects":
                 mock_table2 = Mock()
                 mock_table2.select.return_value = mock_select_chain2
                 return mock_table2

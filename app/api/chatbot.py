@@ -84,7 +84,7 @@ async def chat(
 
         # Verify project exists and belongs to the user
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("project_id, project_name, status, user_id")
             .eq("project_id", str(project_id))
             .execute()

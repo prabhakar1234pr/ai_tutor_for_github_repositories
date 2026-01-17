@@ -71,7 +71,7 @@ class TestRoadmapE2E:
         user_chain = create_query_chain()
         user_chain.execute.return_value.data = [{"id": user_id}]
 
-        # Mock Projects table
+        # Mock projects table
         project_chain = create_query_chain()
         project_chain.execute.return_value.data = [
             {
@@ -145,7 +145,7 @@ class TestRoadmapE2E:
             mock_tbl = Mock()
             if table_name == "User":
                 mock_tbl.select.return_value = user_chain
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 mock_tbl.select.return_value = project_chain
             elif table_name == "roadmap_days":
                 mock_tbl.select.return_value = days_chain
@@ -212,7 +212,7 @@ class TestRoadmapE2E:
             mock_tbl = Mock()
             if table_name == "User":
                 mock_tbl.select.return_value = user_chain
-            elif table_name == "Projects":
+            elif table_name == "projects":
                 mock_tbl.select.return_value = project_chain
             return mock_tbl
 
@@ -610,7 +610,7 @@ class TestRoadmapE2E:
 
         def table_side_effect(table_name):
             mock_tbl = Mock()
-            if table_name == "Projects":
+            if table_name == "projects":
                 mock_tbl.select.return_value = projects_chain
             elif table_name == "roadmap_days":
                 mock_tbl.select.return_value = create_days_select_chain()

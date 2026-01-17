@@ -325,7 +325,7 @@ class WorkspaceManager:
             }
 
         project_response = (
-            self.supabase.table("Projects")
+            self.supabase.table("projects")
             .select("project_id, user_repo_url, github_access_token")
             .eq("project_id", workspace.project_id)
             .eq("user_id", user_id)

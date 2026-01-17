@@ -126,7 +126,7 @@ def _get_container_id(
 
 def _get_project_token(supabase: Client, project_id: str, user_id: str) -> str | None:
     response = (
-        supabase.table("Projects")
+        supabase.table("projects")
         .select("github_access_token")
         .eq("project_id", project_id)
         .eq("user_id", user_id)
@@ -139,7 +139,7 @@ def _get_project_token(supabase: Client, project_id: str, user_id: str) -> str |
 
 def _get_project_repo_url(supabase: Client, project_id: str, user_id: str) -> str | None:
     response = (
-        supabase.table("Projects")
+        supabase.table("projects")
         .select("user_repo_url, github_url")
         .eq("project_id", project_id)
         .eq("user_id", user_id)

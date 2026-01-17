@@ -55,7 +55,7 @@ def verify_project_ownership(
     fields = select_fields or "project_id"
 
     project_response = (
-        supabase.table("Projects")
+        supabase.table("projects")
         .select(fields)
         .eq("project_id", project_id)
         .eq("user_id", user_id)

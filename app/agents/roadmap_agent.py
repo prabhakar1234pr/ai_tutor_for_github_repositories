@@ -260,7 +260,7 @@ async def run_roadmap_agent(
         try:
             supabase = get_supabase_client()
             project_response = (
-                supabase.table("Projects")
+                supabase.table("projects")
                 .select("project_id")
                 .eq("project_id", project_id)
                 .execute()

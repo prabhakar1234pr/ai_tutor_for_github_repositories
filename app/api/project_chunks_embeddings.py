@@ -28,7 +28,7 @@ async def start_project_embedding(
     Kick off the embedding pipeline for a project in the background.
     """
     project_response = (
-        supabase.table("Projects")
+        supabase.table("projects")
         .select("project_id, github_url, status")
         .eq("project_id", str(payload.project_id))
         .execute()
@@ -76,7 +76,7 @@ async def get_project_embedding_status(
     Return the current embedding status for a project.
     """
     response = (
-        supabase.table("Projects")
+        supabase.table("projects")
         .select("project_id, status, error_message, updated_at")
         .eq("project_id", str(project_id))
         .execute()
@@ -106,7 +106,7 @@ async def list_project_chunks(
     """
     # Verify project exists
     project_resp = (
-        supabase.table("Projects").select("project_id").eq("project_id", str(project_id)).execute()
+        supabase.table("projects").select("project_id").eq("project_id", str(project_id)).execute()
     )
     if not project_resp.data:
         raise HTTPException(status_code=404, detail="Project not found")

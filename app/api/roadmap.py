@@ -38,7 +38,7 @@ async def get_roadmap(
 
         # Verify project belongs to user
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("project_id")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
@@ -89,7 +89,7 @@ async def get_day_details(
 
         # Verify project belongs to user
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("project_id")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
@@ -156,7 +156,7 @@ async def get_concept_details(
 
         # Verify project belongs to user
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("project_id")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
@@ -218,7 +218,7 @@ async def get_generation_status(
 
         # Verify project belongs to user and get generation_progress
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("project_id, target_days, generation_progress, error_message")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
@@ -327,7 +327,7 @@ async def get_task_details(
 
         # Verify project belongs to user
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("*")
             .eq("project_id", project_id)
             .eq("user_id", user_id)

@@ -43,7 +43,7 @@ def _make_supabase_mock(*, user_id: str, project_id: str, project_status: str = 
     def table(name: str):
         if name == "User":
             return user_table
-        if name == "Projects":
+        if name == "projects":
             return projects_table
         raise AssertionError(f"Unexpected table requested: {name}")
 

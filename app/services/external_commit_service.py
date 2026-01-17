@@ -171,7 +171,7 @@ class ExternalCommitService:
         if not project_id:
             return None
         response = (
-            self.supabase.table("Projects")
+            self.supabase.table("projects")
             .select(
                 "project_id, user_id, user_repo_url, github_access_token, github_consent_accepted"
             )

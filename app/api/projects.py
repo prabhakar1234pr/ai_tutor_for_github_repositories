@@ -41,14 +41,14 @@ async def create_project(
     supabase: Client = Depends(get_supabase_client),
 ):
     """
-    Create a new project in Supabase Projects table and automatically start the embedding pipeline
+    Create a new project in Supabase projects table and automatically start the embedding pipeline
 
     Flow:
     1. Verify Clerk token (get clerk_user_id)
     2. Get Supabase user_id from User table using clerk_user_id
     3. Extract project name from GitHub URL
     4. Validate input data
-    5. Insert project into Projects table
+    5. Insert project into projects table
     6. Trigger embedding pipeline in background
     7. Return created project data
     """
@@ -93,8 +93,8 @@ async def create_project(
 
         logger.info(f"Inserting project: {project_name}")
 
-        # Insert project into Projects table
-        project_response = supabase.table("Projects").insert(project_insert).execute()
+        # Insert project into projects table
+        project_response = supabase.table("projects").insert(project_insert).execute()
 
         if not project_response.data or len(project_response.data) == 0:
             raise HTTPException(status_code=500, detail="Failed to create project")
@@ -157,7 +157,7 @@ async def _initialize_day0_internal(project_id: str, user_id: str, supabase: Cli
 
     # Verify project exists and belongs to the user
     project_response = (
-        supabase.table("Projects")
+        supabase.table("projects")
         .select("*")
         .eq("project_id", project_id)
         .eq("user_id", user_id)
@@ -377,7 +377,7 @@ async def initialize_day0_content(
 
         # Verify project exists and belongs to the user
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("*")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
@@ -554,7 +554,7 @@ async def list_user_projects(
 
         # Get all projects for user
         projects_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("*")
             .eq("user_id", user_id)
             .order("created_at", desc=True)
@@ -597,7 +597,7 @@ async def get_project(
 
         # Get project (ensure it belongs to the user)
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("*")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
@@ -650,7 +650,7 @@ async def delete_project(
 
         # Verify project exists and belongs to the user
         project_response = (
-            supabase.table("Projects")
+            supabase.table("projects")
             .select("*")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
@@ -683,7 +683,7 @@ async def delete_project(
         # Step 2: Delete project from Supabase (chunks will cascade delete)
         try:
             (
-                supabase.table("Projects")
+                supabase.table("projects")
                 .delete()
                 .eq("project_id", project_id)
                 .eq("user_id", user_id)

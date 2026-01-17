@@ -15,7 +15,7 @@ def fetch_project_context(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Fetch project context from Supabase database.
 
-    This node retrieves the project information from the Projects table.
+    This node retrieves the project information from the projects table.
     The project_id, github_url, skill_level, and target_days should already
     be in the state (passed from the caller), but we verify they exist.
 
@@ -45,7 +45,7 @@ def fetch_project_context(state: RoadmapAgentState) -> RoadmapAgentState:
     # Verify project exists in database
     supabase = get_supabase_client()
     project_response = (
-        supabase.table("Projects")
+        supabase.table("projects")
         .select("project_id, project_name, github_url, skill_level, target_days, status")
         .eq("project_id", project_id)
         .execute()

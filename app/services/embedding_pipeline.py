@@ -47,7 +47,7 @@ async def run_embedding_pipeline(
         logger.info(
             f"📝 Step 1/7: Updating project status to 'processing' for project_id={project_id}"
         )
-        supabase.table("Projects").update({"status": "processing"}).eq(
+        supabase.table("projects").update({"status": "processing"}).eq(
             "project_id", project_id
         ).execute()
         logger.info("✅ Step 1/7: Project status updated to 'processing'")
@@ -197,7 +197,7 @@ async def run_embedding_pipeline(
 
         # Step 7: mark project ready
         logger.info(f"✅ Step 7/7: Updating project status to 'ready' for project_id={project_id}")
-        supabase.table("Projects").update({"status": "ready"}).eq(
+        supabase.table("projects").update({"status": "ready"}).eq(
             "project_id", project_id
         ).execute()
         logger.info("✅ Step 7/7: Project status updated to 'ready'")
@@ -209,7 +209,7 @@ async def run_embedding_pipeline(
 
             # Get project data for roadmap generation
             project_response = (
-                supabase.table("Projects")
+                supabase.table("projects")
                 .select("github_url, skill_level, target_days")
                 .eq("project_id", project_id)
                 .execute()
@@ -352,7 +352,7 @@ async def run_embedding_pipeline(
         # Update project status to failed with error message
         try:
             logger.info("📝 Updating project status to 'failed' with error_message")
-            supabase.table("Projects").update(
+            supabase.table("projects").update(
                 {
                     "status": "failed",
                     "error_message": str(e)[:500],  # Limit error message length
