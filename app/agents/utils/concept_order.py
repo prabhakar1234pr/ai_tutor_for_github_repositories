@@ -83,10 +83,9 @@ def compute_generation_window(
     Compute which concepts should be generated based on sliding window.
 
     Returns concepts that:
-    1. Are within the window (user_position+1 to user_position+window_size)
-    2. Have status "empty" (not yet generated)
-
-    Does NOT include user's current concept - only concepts AFTER it.
+    1. User's current concept (if not yet generated)
+    2. Concepts within the window (user_position+1 to user_position+window_size)
+    3. Have status "empty" (not yet generated)
 
     Args:
         ordered_concept_ids: Ordered list of all concept IDs
@@ -100,21 +99,28 @@ def compute_generation_window(
     if not ordered_concept_ids:
         return []
 
-    # Calculate target position: user + window_size (concepts AFTER user's current)
+    generation_candidates = []
+
+    # First, include user's current concept if it needs generation
+    if user_current_index >= 0 and user_current_index < len(ordered_concept_ids):
+        current_concept_id = ordered_concept_ids[user_current_index]
+        current_status = concept_status_map.get(current_concept_id, {}).get("status", "empty")
+
+        if current_status == "empty":
+            generation_candidates.append(current_concept_id)
+
+    # Then, add concepts within window (after user's current position)
     start_index = user_current_index + 1
     target_index = min(user_current_index + window_size, len(ordered_concept_ids) - 1)
 
-    # If start_index exceeds target_index, window is empty
-    if start_index > target_index:
-        return []
+    if start_index <= target_index:
+        # Get candidates within window (after user's position)
+        candidates = ordered_concept_ids[start_index : target_index + 1]
 
-    # Get candidates within window (after user's position)
-    candidates = ordered_concept_ids[start_index : target_index + 1]
-
-    # Filter to only "empty" concepts
-    generation_candidates = [
-        cid for cid in candidates if concept_status_map.get(cid, {}).get("status") == "empty"
-    ]
+        # Filter to only "empty" concepts
+        for cid in candidates:
+            if concept_status_map.get(cid, {}).get("status") == "empty":
+                generation_candidates.append(cid)
 
     return generation_candidates
 
@@ -128,8 +134,9 @@ def select_next_concept_to_generate(
     """
     Select the next concept to generate based on sliding window.
 
-    Only generates concepts within the window (user_position+1 to user_position+window_size).
-    Does NOT generate concepts after the window - stops when window is full.
+    Generates concepts in this priority:
+    1. User's current concept (if not yet generated)
+    2. Concepts within the window (user_position+1 to user_position+window_size)
 
     Args:
         ordered_concept_ids: Ordered list of all concept IDs
@@ -138,13 +145,22 @@ def select_next_concept_to_generate(
         window_size: How many concepts ahead to generate
 
     Returns:
-        Concept ID to generate within window, or None if window is full/all done
+        Concept ID to generate, or None if all concepts in window are done
     """
     if not ordered_concept_ids:
         return None
 
+    # First, check if user's current concept needs generation
+    if user_current_index >= 0 and user_current_index < len(ordered_concept_ids):
+        current_concept_id = ordered_concept_ids[user_current_index]
+        current_status = concept_status_map.get(current_concept_id, {}).get("status", "empty")
+
+        if current_status == "empty":
+            # User's current concept hasn't been generated - generate it first
+            return current_concept_id
+
+    # User's current concept is already generated, generate concepts ahead
     # Calculate target position: user + window_size (concepts AFTER user's current)
-    # If user is at index 0, generate concepts at indices 1, 2 (window_size=2)
     start_index = user_current_index + 1
     target_index = min(user_current_index + window_size, len(ordered_concept_ids) - 1)
 

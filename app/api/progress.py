@@ -14,7 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from supabase import Client
 
-from app.core.supabase_client import get_supabase_client
+from app.core.supabase_client import execute_with_retry, get_supabase_client
 from app.services.roadmap_generation import trigger_incremental_generation_sync
 from app.utils.clerk_auth import verify_clerk_token
 
@@ -352,10 +352,11 @@ async def get_current_progress(
         )
         days = days_response.data if days_response.data else []
 
-        # Get day progress
-        day_progress_response = (
-            supabase.table("user_day_progress").select("*").eq("user_id", user_id).execute()
-        )
+        # Get day progress (with retry)
+        def get_day_progress():
+            return supabase.table("user_day_progress").select("*").eq("user_id", user_id).execute()
+
+        day_progress_response = execute_with_retry(get_day_progress)
         day_progress_map = {p["day_id"]: p for p in (day_progress_response.data or [])}
 
         # Find current day (highest "doing" or lowest "todo")

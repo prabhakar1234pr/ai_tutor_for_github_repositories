@@ -112,14 +112,27 @@ async def get_day_details(
         day = day_response.data[0]
 
         # Get concepts for this day (including content and estimated_minutes)
-        concepts_response = (
-            supabase.table("concepts")
-            .select("*")
-            .eq("day_id", day_id)
-            .order("order_index", desc=False)
-            .execute()
-        )
+        # Return ALL concepts regardless of generated_status to support lazy generation
+        from app.core.supabase_client import execute_with_retry
+
+        def get_concepts():
+            return (
+                supabase.table("concepts")
+                .select("*")
+                .eq("day_id", day_id)
+                .order("order_index", desc=False)
+                .execute()
+            )
+
+        concepts_response = execute_with_retry(get_concepts)
         concepts = concepts_response.data if concepts_response.data else []
+
+        # Log detailed concept data for debugging
+        logger.info(
+            f"📊 Concepts for day {day_id} (day_number={day.get('day_number')}): "
+            f"total={len(concepts)}, "
+            f"concepts_detail={[(c.get('concept_id'), c.get('title'), c.get('generated_status'), bool(c.get('content')), len(c.get('content', '')) if c.get('content') else 0) for c in concepts]}"
+        )
 
         return {"success": True, "day": day, "concepts": concepts}
 
@@ -166,23 +179,60 @@ async def get_concept_details(
             raise HTTPException(status_code=404, detail="Project not found")
 
         # Get concept (includes content and estimated_minutes)
-        concept_response = (
-            supabase.table("concepts").select("*").eq("concept_id", concept_id).execute()
-        )
+        # Use execute_with_retry to handle connection issues
+        from app.core.supabase_client import execute_with_retry
+
+        def get_concept():
+            return supabase.table("concepts").select("*").eq("concept_id", concept_id).execute()
+
+        concept_response = execute_with_retry(get_concept)
+
         if not concept_response.data:
+            logger.error(f"Concept {concept_id} not found in database")
             raise HTTPException(status_code=404, detail="Concept not found")
 
         concept = concept_response.data[0]
 
-        # Get tasks (includes difficulty, hints, solution, estimated_minutes)
-        tasks_response = (
-            supabase.table("tasks")
-            .select("*")
-            .eq("concept_id", concept_id)
-            .order("order_index", desc=False)
-            .execute()
+        # Log raw concept data from database
+        logger.info(
+            f"📊 Concept from DB (concept_id={concept_id}): "
+            f"title={concept.get('title')}, "
+            f"generated_status={concept.get('generated_status')}, "
+            f"content_is_null={concept.get('content') is None}, "
+            f"content_is_empty={concept.get('content') == ''}, "
+            f"content_length={len(concept.get('content', '')) if concept.get('content') else 0}, "
+            f"content_preview={str(concept.get('content', ''))[:100] if concept.get('content') else 'None'}"
         )
+
+        # Get tasks (includes difficulty, hints, solution, estimated_minutes)
+        def get_tasks():
+            return (
+                supabase.table("tasks")
+                .select("*")
+                .eq("concept_id", concept_id)
+                .order("order_index", desc=False)
+                .execute()
+            )
+
+        tasks_response = execute_with_retry(get_tasks)
         tasks = tasks_response.data if tasks_response.data else []
+
+        # Log tasks data
+        logger.info(
+            f"📋 Tasks from DB (concept_id={concept_id}): "
+            f"tasks_count={len(tasks)}, "
+            f"task_ids={[t.get('task_id') for t in tasks]}, "
+            f"task_titles={[t.get('title') for t in tasks]}"
+        )
+
+        # Log final response
+        logger.info(
+            f"✅ Returning concept details for {concept_id}: "
+            f"generated_status={concept.get('generated_status')}, "
+            f"has_content={bool(concept.get('content'))}, "
+            f"content_length={len(concept.get('content', '')) if concept.get('content') else 0}, "
+            f"tasks_count={len(tasks)}"
+        )
 
         return {"success": True, "concept": concept, "tasks": tasks}
 
@@ -275,6 +325,95 @@ async def get_generation_status(
         raise HTTPException(
             status_code=500, detail=f"Failed to fetch generation status: {str(e)}"
         ) from e
+
+
+@router.get("/{project_id}/concept/{concept_id}/debug")
+async def debug_concept_details(
+    project_id: str,
+    concept_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+):
+    """
+    Debug endpoint to check what's actually in the database for a concept.
+    Returns raw database data without any processing.
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+
+        # Get user_id
+        user_response = (
+            supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        )
+        if not user_response.data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_id = user_response.data[0]["id"]
+
+        # Verify project belongs to user
+        project_response = (
+            supabase.table("projects")
+            .select("project_id")
+            .eq("project_id", project_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Get concept with ALL fields explicitly listed
+        concept_response = (
+            supabase.table("concepts")
+            .select(
+                "concept_id, day_id, order_index, title, description, content, "
+                "generated_status, estimated_minutes, created_at, difficulty, "
+                "depends_on, repo_anchors, objective, failure_reason, attempt_count"
+            )
+            .eq("concept_id", concept_id)
+            .execute()
+        )
+
+        if not concept_response.data:
+            return {
+                "success": False,
+                "error": "Concept not found",
+                "concept_id": concept_id,
+                "concept_data": None,
+            }
+
+        concept = concept_response.data[0]
+
+        # Get tasks
+        tasks_response = (
+            supabase.table("tasks")
+            .select("*")
+            .eq("concept_id", concept_id)
+            .order("order_index", desc=False)
+            .execute()
+        )
+        tasks = tasks_response.data if tasks_response.data else []
+
+        return {
+            "success": True,
+            "concept_id": concept_id,
+            "concept": {
+                **concept,
+                "content_is_null": concept.get("content") is None,
+                "content_is_empty_string": concept.get("content") == "",
+                "content_length": len(concept.get("content", "")) if concept.get("content") else 0,
+                "content_preview": (
+                    concept.get("content", "")[:200] if concept.get("content") else None
+                ),
+            },
+            "tasks": tasks,
+            "tasks_count": len(tasks),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in debug endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Debug endpoint error: {str(e)}") from e
 
 
 @router.get("/task/{task_id}")

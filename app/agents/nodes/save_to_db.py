@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from app.agents.state import ConceptStatus, RoadmapAgentState
-from app.core.supabase_client import get_supabase_client
+from app.core.supabase_client import execute_with_retry, get_supabase_client
 
 # Day 0 is handled separately via API endpoint, not imported here
 from app.utils.markdown_sanitizer import sanitize_markdown_content
@@ -47,35 +47,42 @@ def get_user_current_concept_from_progress(
 
     supabase = get_supabase_client()
 
-    # Get all day_ids for this project
-    days_response = (
-        supabase.table("roadmap_days").select("day_id").eq("project_id", project_id).execute()
-    )
+    # Get all day_ids for this project (with retry)
+    def get_days():
+        return (
+            supabase.table("roadmap_days").select("day_id").eq("project_id", project_id).execute()
+        )
+
+    days_response = execute_with_retry(get_days)
 
     if not days_response.data:
         return None
 
     day_ids = [d["day_id"] for d in days_response.data]
 
-    # Get all concepts for these days
-    concepts_response = (
-        supabase.table("concepts").select("concept_id").in_("day_id", day_ids).execute()
-    )
+    # Get all concepts for these days (with retry)
+    def get_concepts():
+        return supabase.table("concepts").select("concept_id").in_("day_id", day_ids).execute()
+
+    concepts_response = execute_with_retry(get_concepts)
 
     if not concepts_response.data:
         return None
 
     project_concept_ids = [c["concept_id"] for c in concepts_response.data]
 
-    # Query user_concept_progress for concepts with 'doing' status
-    progress_response = (
-        supabase.table("user_concept_progress")
-        .select("concept_id, progress_status, completed_at")
-        .eq("user_id", user_id)
-        .in_("concept_id", project_concept_ids)
-        .eq("progress_status", "doing")
-        .execute()
-    )
+    # Query user_concept_progress for concepts with 'doing' status (with retry)
+    def get_doing_progress():
+        return (
+            supabase.table("user_concept_progress")
+            .select("concept_id, progress_status, completed_at")
+            .eq("user_id", user_id)
+            .in_("concept_id", project_concept_ids)
+            .eq("progress_status", "doing")
+            .execute()
+        )
+
+    progress_response = execute_with_retry(get_doing_progress)
 
     if progress_response.data:
         # User is currently working on a concept
@@ -86,17 +93,20 @@ def get_user_current_concept_from_progress(
                 logger.info(f"📍 User is currently working on concept: {curriculum_id}")
                 return curriculum_id
 
-    # If no 'doing' concept, find most recent 'done' concept
-    done_response = (
-        supabase.table("user_concept_progress")
-        .select("concept_id, completed_at")
-        .eq("user_id", user_id)
-        .in_("concept_id", project_concept_ids)
-        .eq("progress_status", "done")
-        .order("completed_at", desc=True)
-        .limit(1)
-        .execute()
-    )
+    # If no 'doing' concept, find most recent 'done' concept (with retry)
+    def get_done_progress():
+        return (
+            supabase.table("user_concept_progress")
+            .select("concept_id, completed_at")
+            .eq("user_id", user_id)
+            .in_("concept_id", project_concept_ids)
+            .eq("progress_status", "done")
+            .order("completed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+
+    done_response = execute_with_retry(get_done_progress)
 
     if done_response.data:
         done_concept_id = done_response.data[0]["concept_id"]
@@ -174,7 +184,11 @@ def insert_all_days_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
             state["day_ids_map"] = {}
             return state
 
-        response = supabase.table("roadmap_days").insert(days_to_insert).execute()
+        # Insert days with retry logic
+        def insert_days():
+            return supabase.table("roadmap_days").insert(days_to_insert).execute()
+
+        response = execute_with_retry(insert_days)
 
         if not response.data:
             raise ValueError("Failed to insert days into database")
@@ -322,7 +336,11 @@ def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
             batch_data = [c["data"] for c in batch]
             batch_curriculum_ids = [c["curriculum_id"] for c in batch]
 
-            response = supabase.table("concepts").insert(batch_data).execute()
+            # Insert with retry logic
+            def insert_batch(batch=batch_data):
+                return supabase.table("concepts").insert(batch).execute()
+
+            response = execute_with_retry(insert_batch)
 
             if not response.data:
                 raise ValueError(f"Failed to insert concepts batch {i // BATCH_SIZE + 1}")
@@ -357,10 +375,16 @@ def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
                     ]
 
                     if database_concept_ids:
-                        # Update day with database concept UUIDs
-                        supabase.table("roadmap_days").update(
-                            {"concept_ids": database_concept_ids}
-                        ).eq("day_id", day_id).execute()
+                        # Update day with database concept UUIDs (with retry)
+                        def update_day(concept_ids=database_concept_ids, day=day_id):
+                            return (
+                                supabase.table("roadmap_days")
+                                .update({"concept_ids": concept_ids})
+                                .eq("day_id", day)
+                                .execute()
+                            )
+
+                        execute_with_retry(update_day)
                         logger.debug(
                             f"   Updated day {day_number} with {len(database_concept_ids)} concept UUIDs"
                         )
@@ -385,10 +409,18 @@ def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
                     ]
 
                     if database_depends_on:
-                        # Update concept with database UUIDs for depends_on
-                        supabase.table("concepts").update({"depends_on": database_depends_on}).eq(
-                            "concept_id", database_concept_id
-                        ).execute()
+                        # Update concept with database UUIDs for depends_on (with retry)
+                        def update_concept(
+                            depends_on=database_depends_on, concept_id=database_concept_id
+                        ):
+                            return (
+                                supabase.table("concepts")
+                                .update({"depends_on": depends_on})
+                                .eq("concept_id", concept_id)
+                                .execute()
+                            )
+
+                        execute_with_retry(update_concept)
                         logger.debug(
                             f"   Updated concept {curriculum_concept_id} with {len(database_depends_on)} dependencies"
                         )
@@ -401,14 +433,20 @@ def save_all_concepts_to_db(state: RoadmapAgentState) -> RoadmapAgentState:
         project_id = state.get("project_id")
         user_id = state.get("_user_id")
         if user_id and project_id:
-            user_current_concept_id = get_user_current_concept_from_progress(
-                project_id=project_id,
-                user_id=user_id,
-                concept_ids_map=concept_ids_map,
-            )
-            if user_current_concept_id:
-                state["user_current_concept_id"] = user_current_concept_id
-                logger.info(f"📍 Set user_current_concept_id to: {user_current_concept_id}")
+            try:
+                user_current_concept_id = get_user_current_concept_from_progress(
+                    project_id=project_id,
+                    user_id=user_id,
+                    concept_ids_map=concept_ids_map,
+                )
+                if user_current_concept_id:
+                    state["user_current_concept_id"] = user_current_concept_id
+                    logger.info(f"📍 Set user_current_concept_id to: {user_current_concept_id}")
+            except Exception as e:
+                # Don't fail the workflow if we can't determine user's current concept
+                logger.warning(
+                    f"⚠️  Failed to determine user's current concept: {e}. Continuing without it."
+                )
 
         return state
 
