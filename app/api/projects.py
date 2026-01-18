@@ -110,19 +110,10 @@ async def create_project(
         )
 
         # Initialize Day 0 content immediately
-        day0_initialized = False
         try:
             # Call the Day 0 initialization logic directly
             await _initialize_day0_internal(str(project_id), user_id, supabase)
-
-            # Update project status to "day0_ready" so frontend knows Day 0 is available
-            supabase.table("projects").update({"status": "day0_ready"}).eq(
-                "project_id", project_id
-            ).execute()
-
-            # Only mark as initialized after status update succeeds
-            day0_initialized = True
-            logger.info("✅ Day 0 initialized - project status updated to 'day0_ready'")
+            logger.info("✅ Day 0 initialized")
         except Exception as e:
             logger.error(f"❌ Error initializing Day 0: {e}", exc_info=True)
             # Don't fail project creation if Day 0 fails - it can be retried
@@ -146,10 +137,9 @@ async def create_project(
                 "github_url": created_project["github_url"],
                 "skill_level": created_project["skill_level"],
                 "target_days": created_project["target_days"],
-                "status": "day0_ready" if day0_initialized else created_project["status"],
+                "status": created_project["status"],
                 "created_at": created_project["created_at"],
             },
-            "day0_ready": day0_initialized,
         }
 
     except HTTPException:
