@@ -17,6 +17,7 @@ Deprecated (kept for backward compatibility):
 
 from app.agents.nodes.analyze_repo import analyze_repository
 from app.agents.nodes.day_summary import create_day_summary
+from app.agents.nodes.extract_patterns import extract_patterns_from_tests
 from app.agents.nodes.fetch_context import fetch_project_context
 from app.agents.nodes.generate_content import (
     # New function
@@ -26,6 +27,7 @@ from app.agents.nodes.generate_content import (
     generate_subconcepts_and_tasks,
     select_next_incomplete_day,
 )
+from app.agents.nodes.generate_tasks import generate_tasks_with_tests
 from app.agents.nodes.memory_context import (
     build_memory_context,
     build_memory_context_for_concept,
@@ -55,6 +57,8 @@ __all__ = [
     "build_memory_context",
     "build_memory_context_for_concept",
     "generate_concept_content",
+    "generate_tasks_with_tests",
+    "extract_patterns_from_tests",
     "mark_concept_complete",
     # Deprecated (backward compatibility)
     "select_next_incomplete_day",

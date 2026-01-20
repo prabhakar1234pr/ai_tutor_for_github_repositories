@@ -3,15 +3,15 @@ Content generation nodes using LLM.
 Generates concept content with lazy loading and retry logic.
 
 Optimized for the new curriculum structure:
-- generate_concept_content: Generates content, tasks, and summary in a SINGLE LLM call
+- generate_concept_content: Generates content and summary in a SINGLE LLM call
+- Tasks are generated separately in a dedicated node with test files
 - Uses retry wrapper for resilient LLM calls
 - Updates memory_ledger with skills and files
 - Derives generation queue from curriculum (not stored in state)
 
 LLM Call Optimization:
-- Before: 3 calls per concept (content, tasks, summary)
-- After: 1 call per concept (combined CONCEPT_GENERATION_PROMPT)
-- For 56 concepts: 170 calls → 58 calls (66% reduction)
+- Content generation: 1 call per concept (content + summary)
+- Tasks are generated separately with test files in generate_tasks_with_tests node
 """
 
 import logging
@@ -22,7 +22,6 @@ from app.agents.prompts import (
     # Deprecated prompts (kept for backward compatibility in deprecated functions)
     CONCEPTS_GENERATION_PROMPT,
     CONTENT_GENERATION_PROMPT,
-    TASKS_GENERATION_PROMPT,
 )
 from app.agents.state import ConceptData, RoadmapAgentState
 from app.agents.utils.concept_order import (
@@ -36,7 +35,6 @@ from app.services.groq_service import get_groq_service
 
 # Note: Day 0 is handled separately via API endpoint, not imported here
 from app.utils.json_parser import parse_llm_json_response_async
-from app.utils.type_validator import validate_and_normalize_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +61,7 @@ async def generate_concept_content(state: RoadmapAgentState) -> RoadmapAgentStat
     1. Derives ordered concept list from curriculum
     2. Determines which concept to generate next (using sliding window)
     3. Builds memory context for the concept
-    4. Generates content and tasks with retry logic
+    4. Generates content and summary with retry logic
     5. Updates state: concept_status_map, concept_summaries, memory_ledger
 
     Args:
@@ -207,37 +205,18 @@ async def _llm_generate_concept_bundle(
     memory_context_str: str,
 ) -> dict[str, Any]:
     """
-    Generate content, tasks, and summary for a single concept in ONE LLM call.
+    Generate content and summary for a single concept in ONE LLM call.
 
-    This is the optimized version that combines what was previously 3 separate
-    LLM calls (content, tasks, summary) into a single call.
+    Tasks are generated separately in the generate_tasks_with_tests node.
 
     Args:
         concept_id: Concept ID
         concept_metadata: Metadata from curriculum
         skill_level: User's skill level
-        memory_context: Context from previous concepts
-
-    Returns:
-        Dict with content, tasks, estimated_minutes, summary, skills_unlocked, files_touched
-
-    Raises:
-        JSONParseError: If LLM response cannot be parsed
-    """
-    """
-    Call LLM to generate concept bundle (content + tasks + summary).
-
-    This is the only function that calls the LLM. All other operations
-    (validation, persistence, ledger updates) are separate.
-
-    Args:
-        concept_id: Concept ID
-        concept_metadata: Concept metadata from curriculum
-        skill_level: User's skill level
         memory_context_str: Formatted memory context string
 
     Returns:
-        Raw LLM response dict (not yet validated)
+        Raw LLM response dict (not yet validated) with content, estimated_minutes, summary, skills_unlocked, files_touched
 
     Raises:
         JSONParseError: If LLM response cannot be parsed
@@ -260,9 +239,7 @@ async def _llm_generate_concept_bundle(
         memory_context=memory_context_str,
     )
 
-    logger.debug(
-        f"   Calling LLM for '{concept_title}' (single call for content + tasks + summary)..."
-    )
+    logger.debug(f"   Calling LLM for '{concept_title}' (content + summary)...")
     response = await groq_service.generate_response_async(
         user_query=combined_prompt,
         system_prompt="You are an expert technical educator. Return ONLY valid JSON object, no markdown or extra text.",
@@ -291,7 +268,7 @@ def _validate_concept_output(
         concept_metadata: Concept metadata (for defaults)
 
     Returns:
-        Validated and normalized result dict
+        Validated and normalized result dict (content, estimated_minutes, summary, skills_unlocked, files_touched)
 
     Raises:
         JSONParseError: If validation fails
@@ -301,21 +278,16 @@ def _validate_concept_output(
     if not content or not content.strip():
         raise JSONParseError(f"Empty content generated for {concept_title}")
 
-    # Extract and validate tasks
-    tasks_raw = raw_result.get("tasks", [])
-    tasks = validate_and_normalize_tasks(tasks_raw)
-
     # Extract other fields with defaults
     estimated_minutes = raw_result.get("estimated_minutes", 15)
     summary = raw_result.get("summary", f"Learned about {concept_title}.")
     skills_unlocked = raw_result.get("skills_unlocked", [])
     files_touched = raw_result.get("files_touched", concept_metadata.get("repo_anchors", []))
 
-    logger.debug(f"   ✅ Validated output: {len(content)} chars content, {len(tasks)} tasks")
+    logger.debug(f"   ✅ Validated output: {len(content)} chars content")
 
     return {
         "content": content,
-        "tasks": tasks,
         "estimated_minutes": estimated_minutes,
         "summary": summary,
         "skills_unlocked": skills_unlocked,
@@ -337,13 +309,11 @@ async def _persist_concept_content(
         project_id: Project ID for summary save
     """
     content = validated_result["content"]
-    tasks = validated_result["tasks"]
     estimated_minutes = validated_result["estimated_minutes"]
 
     await _save_concept_content_to_db(
         database_concept_id=database_concept_id,
         content=content,
-        tasks=tasks,
         estimated_minutes=estimated_minutes,
     )
 
@@ -387,8 +357,8 @@ def _update_concept_ledger(
 
 
 # NOTE: _generate_concept_summary_inline has been REMOVED
-# Summary generation is now integrated into _generate_content_and_tasks_for_concept
-# using the combined CONCEPT_GENERATION_PROMPT (single LLM call)
+# Summary generation is now integrated into _llm_generate_concept_bundle
+# using the CONCEPT_GENERATION_PROMPT (single LLM call for content + summary)
 
 
 def _update_memory_ledger(
@@ -435,10 +405,13 @@ def _update_memory_ledger(
 async def _save_concept_content_to_db(
     database_concept_id: str,
     content: str,
-    tasks: list[dict],
     estimated_minutes: int,
 ) -> None:
-    """Save generated content to database."""
+    """
+    Save generated content to database.
+
+    Tasks are saved separately in the generate_tasks_with_tests node.
+    """
     from app.utils.markdown_sanitizer import sanitize_markdown_content
 
     supabase = get_supabase_client()
@@ -456,29 +429,7 @@ async def _save_concept_content_to_db(
             }
         ).eq("concept_id", database_concept_id).execute()
 
-        # Insert tasks
-        if tasks:
-            tasks_to_insert = []
-            for task in tasks:
-                if isinstance(task, dict):
-                    tasks_to_insert.append(
-                        {
-                            "concept_id": database_concept_id,
-                            "order_index": int(task.get("order_index", 0)),
-                            "title": str(task.get("title", "")),
-                            "description": str(task.get("description", "")),
-                            "task_type": str(task.get("task_type", "coding")),
-                            "estimated_minutes": int(task.get("estimated_minutes", 15)),
-                            "difficulty": str(task.get("difficulty", "medium")),
-                            "hints": task.get("hints", []),
-                            "solution": task.get("solution"),
-                            "generated_status": "generated",
-                        }
-                    )
-
-            if tasks_to_insert:
-                supabase.table("tasks").insert(tasks_to_insert).execute()
-                logger.debug(f"   Saved {len(tasks_to_insert)} tasks to database")
+        logger.debug(f"   Saved content to database for concept {database_concept_id}")
 
     except Exception as e:
         logger.warning(f"⚠️  Failed to save content to database: {e}")
@@ -732,29 +683,7 @@ async def generate_content_and_tasks(state: RoadmapAgentState) -> RoadmapAgentSt
             concept["content"] = ""
             concept["estimated_minutes"] = 15
 
-        # Generate tasks
-        tasks_prompt = TASKS_GENERATION_PROMPT.format(
-            day_number=current_day_number,
-            concept_title=concept["title"],
-            concept_description=concept.get("description", ""),
-            skill_level=skill_level,
-        )
-
-        logger.debug("   Calling LLM for tasks...")
-        tasks_response = await groq_service.generate_response_async(
-            user_query=tasks_prompt,
-            system_prompt="You are an expert educator. Return ONLY valid JSON array, no markdown.",
-            context="",
-        )
-
-        # Parse and validate tasks JSON
-        try:
-            tasks_raw = await parse_llm_json_response_async(tasks_response, expected_type="array")
-            concept["tasks"] = validate_and_normalize_tasks(tasks_raw)
-            logger.debug(f"   Generated {len(concept['tasks'])} valid tasks")
-        except Exception as parse_error:
-            logger.warning(f"⚠️  Failed to parse tasks JSON: {parse_error}")
-            concept["tasks"] = []
+        # Tasks are now generated separately in generate_tasks_with_tests node
 
         logger.info(f"✅ Generated content for concept: {concept['title']}")
 
@@ -763,9 +692,8 @@ async def generate_content_and_tasks(state: RoadmapAgentState) -> RoadmapAgentSt
         return state
 
     except Exception as e:
-        logger.error(f"❌ Failed to generate content/tasks: {e}", exc_info=True)
+        logger.error(f"❌ Failed to generate content: {e}", exc_info=True)
         concept["content"] = concept.get("content", "")
-        concept["tasks"] = concept.get("tasks", [])
         logger.warning(f"⚠️  Using fallback for concept '{concept['title']}'")
         state["current_concepts"] = current_concepts
         return state

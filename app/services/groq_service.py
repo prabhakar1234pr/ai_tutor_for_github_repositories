@@ -68,9 +68,17 @@ class GroqService:
         system_prompt: str,
         context: str,
         conversation_history: list[dict] | None = None,
+        temperature: float | None = None,
     ) -> str:
         """
         Async version with rate limiting and retry logic.
+
+        Args:
+            user_query: User's query
+            system_prompt: System prompt
+            context: Additional context
+            conversation_history: Conversation history
+            temperature: LLM temperature (0.0-2.0, None uses default 0.7)
         """
         # Acquire rate limit permission (includes minimum delay)
         await self.rate_limiter.acquire()
@@ -85,6 +93,7 @@ class GroqService:
             system_prompt=system_prompt,
             context=context,
             conversation_history=conversation_history,
+            temperature=temperature,
         )
 
     @retry(
@@ -101,6 +110,7 @@ class GroqService:
         system_prompt: str,
         context: str,
         conversation_history: list[dict] | None = None,
+        temperature: float | None = None,
     ) -> str:
         """Internal method with retry logic"""
         return await self._make_api_request(
@@ -108,6 +118,7 @@ class GroqService:
             system_prompt=system_prompt,
             context=context,
             conversation_history=conversation_history,
+            temperature=temperature,
         )
 
     async def _make_api_request(
@@ -116,6 +127,7 @@ class GroqService:
         system_prompt: str,
         context: str,
         conversation_history: list[dict] | None = None,
+        temperature: float | None = None,
     ) -> str:
         """Make the actual API request"""
         if conversation_history is None:
@@ -154,7 +166,7 @@ class GroqService:
         payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": 0.7,
+            "temperature": temperature if temperature is not None else 0.7,
             "max_tokens": 2000,
             "top_p": 1.0,
         }
@@ -165,7 +177,7 @@ class GroqService:
         }
 
         logger.debug(
-            f"   Request payload: model={self.model}, messages={len(messages)}, max_tokens={payload['max_tokens']}"
+            f"   Request payload: model={self.model}, messages={len(messages)}, max_tokens={payload['max_tokens']}, temperature={payload['temperature']}"
         )
 
         # Make API request (async)

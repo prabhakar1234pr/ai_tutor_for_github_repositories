@@ -23,8 +23,10 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 
 from app.agents.nodes.analyze_repo import analyze_repository
+from app.agents.nodes.extract_patterns import extract_patterns_from_tests
 from app.agents.nodes.fetch_context import fetch_project_context
 from app.agents.nodes.generate_content import generate_concept_content
+from app.agents.nodes.generate_tasks import generate_tasks_with_tests
 from app.agents.nodes.memory_context import build_memory_context
 from app.agents.nodes.plan_curriculum import plan_and_save_curriculum
 from app.agents.nodes.save_to_db import (
@@ -173,8 +175,10 @@ def build_roadmap_graph() -> StateGraph:
     5. Save all concepts to database (with status='empty')
     6. Loop: Generate concept content with lazy loading
        a. Build memory context from state ledger
-       b. Generate content + tasks with retry
-       c. Mark concept complete (updates day if all concepts done)
+       b. Generate content (no tasks) with retry
+       c. Generate tasks with test files (using notebook repo context)
+       d. Extract verification patterns from test files
+       e. Mark concept complete (updates day if all concepts done)
     7. End when all concepts generated
 
     Returns:
@@ -198,6 +202,8 @@ def build_roadmap_graph() -> StateGraph:
     # Note: Day 0 is handled separately via API endpoint (initialize-day0)
     workflow.add_node("build_memory_context", build_memory_context)
     workflow.add_node("generate_concept_content", generate_concept_content)
+    workflow.add_node("generate_tasks_with_tests", generate_tasks_with_tests)
+    workflow.add_node("extract_patterns_from_tests", extract_patterns_from_tests)
     workflow.add_node("mark_concept_complete", mark_concept_complete)
 
     # ===== EDGES =====
@@ -223,7 +229,9 @@ def build_roadmap_graph() -> StateGraph:
 
     # Content generation loop (concept-level)
     workflow.add_edge("build_memory_context", "generate_concept_content")
-    workflow.add_edge("generate_concept_content", "mark_concept_complete")
+    workflow.add_edge("generate_concept_content", "generate_tasks_with_tests")
+    workflow.add_edge("generate_tasks_with_tests", "extract_patterns_from_tests")
+    workflow.add_edge("extract_patterns_from_tests", "mark_concept_complete")
 
     # After marking concept complete, check if more concepts needed
     workflow.add_conditional_edges(
@@ -373,7 +381,7 @@ async def run_roadmap_agent(
 
         # Calculate recursion limit (v2):
         # - Base: 5 (fetch, analyze, plan, insert_days, save_concepts)
-        # - Per concept: 3 (build_memory, generate_content, mark_complete)
+        # - Per concept: 5 (build_memory, generate_content, generate_tasks, extract_patterns, mark_complete)
         # - Estimated ~4 concepts per day
         config = {"recursion_limit": calculate_recursion_limit(target_days)}
 
