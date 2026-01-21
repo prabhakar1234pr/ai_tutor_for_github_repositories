@@ -93,11 +93,15 @@ class Settings(BaseSettings):
 
     # LLM API Keys - Groq (Development)
     groq_api_key: str | None = None
+    groq_api_key2: str | None = (
+        None  # Maps to GROQ_API_KEY2 - for task verification (higher limits)
+    )
     groq_model: str = "llama-3.1-70b-instruct"
     groq_sanitizer_model: str = (
         "openai/gpt-oss-120b"  # Model for JSON sanitization (when main model returns markdown/code)
     )
     groq_sanitizer_enabled: bool = True  # Enable/disable sanitizer
+
     # GitHub API
     github_access_token: str | None = None  # Maps to GITHUB_ACCESS_TOKEN
 

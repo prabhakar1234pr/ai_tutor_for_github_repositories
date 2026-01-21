@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import time
+from typing import Any
 
 import httpx
 from tenacity import (
@@ -20,8 +22,9 @@ logger = logging.getLogger(__name__)
 # Groq API endpoint (OpenAI-compatible)
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Lazy singleton instance
+# Lazy singleton instances
 _groq_service_instance = None
+_groq_verification_service_instance = None
 
 
 def get_groq_service() -> "GroqService":
@@ -42,18 +45,46 @@ def get_groq_service() -> "GroqService":
     return _groq_service_instance
 
 
+def get_groq_verification_service() -> "GroqService":
+    """
+    Get or create singleton GroqService instance for task verification (uses GROQ_API_KEY2).
+
+    Returns:
+        GroqService: Singleton instance with GROQ_API_KEY2
+    """
+    global _groq_verification_service_instance
+
+    if _groq_verification_service_instance is None:
+        logger.info("🤖 Initializing GroqService for verification (first use)...")
+        logger.info(f"   Model: {settings.groq_model}")
+        _groq_verification_service_instance = GroqService(use_api_key2=True)
+        logger.info("✅ GroqService for verification ready (will reuse for future requests)")
+
+    return _groq_verification_service_instance
+
+
 class GroqService:
-    def __init__(self):
+    def __init__(self, use_api_key2: bool = False):
         """
         Initialize GroqService with rate limiting and retry logic.
-        """
-        if not settings.groq_api_key:
-            raise ValueError("GROQ_API_KEY is not configured. Please set it in your .env file.")
 
-        self.api_key = settings.groq_api_key
+        Args:
+            use_api_key2: If True, use GROQ_API_KEY2 (for verification with higher limits)
+        """
+        if use_api_key2:
+            if not settings.groq_api_key2:
+                raise ValueError(
+                    "GROQ_API_KEY2 is not configured. Please set it in your .env file."
+                )
+            self.api_key = settings.groq_api_key2
+        else:
+            if not settings.groq_api_key:
+                raise ValueError("GROQ_API_KEY is not configured. Please set it in your .env file.")
+            self.api_key = settings.groq_api_key
+
         self.model = settings.groq_model
         self.api_url = GROQ_API_URL
-        self.timeout = 60.0  # 60 seconds timeout
+        self.timeout = 180.0  # 180 seconds timeout (longer for agent workflows)
         self.rate_limiter = get_rate_limiter()
 
         logger.info("✅ GroqService initialized")
@@ -241,6 +272,211 @@ class GroqService:
             )
 
             return assistant_message
+
+    async def generate_with_tools_async(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4000,
+    ) -> dict[str, Any]:
+        """
+        Generate response with function calling support (OpenAI-compatible format).
+
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+            tools: List of tool/function definitions (OpenAI format)
+            temperature: LLM temperature (0.0-2.0, default 0.0 for deterministic)
+            max_tokens: Maximum tokens in response (default 4000 for agent workflows)
+
+        Returns:
+            {
+                "content": str | None,  # Text content if no tool calls
+                "tool_calls": list[dict] | None,  # Tool calls if agent wants to call tools
+                "finish_reason": str,  # "stop", "tool_calls", etc.
+                "usage": dict | None  # Token usage info
+            }
+        """
+        # Acquire rate limit permission
+        await self.rate_limiter.acquire()
+
+        # Additional delay for rate limit compliance
+        await asyncio.sleep(0.5)
+
+        # Retry logic with exponential backoff
+        return await self._generate_with_tools_retry(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    @retry(
+        stop=stop_after_attempt(5),  # More attempts for rate limits
+        wait=wait_exponential(multiplier=2, min=5, max=120),  # Longer waits: 5s, 10s, 20s, 40s, 80s
+        retry=retry_if_exception_type((ValueError, httpx.HTTPStatusError, httpx.TimeoutException)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        after=after_log(logger, logging.INFO),
+        reraise=True,
+    )
+    async def _generate_with_tools_retry(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4000,
+    ) -> dict[str, Any]:
+        """Internal method with retry logic"""
+        return await self._make_tools_api_request(
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    async def _make_tools_api_request(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 4000,
+    ) -> dict[str, Any]:
+        """
+        Make the actual API request to Groq with function calling support.
+
+        Args:
+            messages: List of message dicts
+            tools: List of tool definitions (OpenAI function calling format)
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens
+
+        Returns:
+            Response dict with content, tool_calls, finish_reason, usage
+        """
+        start_time = time.time()
+        logger.info(f"🤖 Calling Groq API with tools (model: {self.model})")
+        logger.debug(f"   Messages: {len(messages)}")
+        logger.debug(f"   Tools: {len(tools) if tools else 0}")
+        logger.debug(f"   Temperature: {temperature}, Max tokens: {max_tokens}")
+
+        # Prepare API request payload
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        # Add tools if provided (OpenAI-compatible format)
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"  # Let model decide when to call tools
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # Calculate approximate request size
+        payload_size = len(json.dumps(payload))
+        logger.info(f"   Request size: ~{payload_size / 1024:.1f} KB")
+        logger.debug(f"   API URL: {self.api_url}")
+
+        # Make API request (async)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self.api_url,
+                    json=payload,
+                    headers=headers,
+                )
+
+                # Handle rate limit errors specifically
+                if response.status_code == 429:
+                    error_detail = (
+                        response.json()
+                        if response.headers.get("content-type", "").startswith("application/json")
+                        else {}
+                    )
+                    error_msg = error_detail.get("error", {}).get("message", "Rate limit exceeded")
+
+                    # Extract retry-after if available
+                    retry_after = response.headers.get("retry-after")
+                    if retry_after:
+                        wait_time = float(retry_after) + 2  # Add buffer
+                        logger.warning(
+                            f"⏳ Rate limited, waiting {wait_time}s as per Retry-After header"
+                        )
+                        await asyncio.sleep(wait_time)
+                    else:
+                        # No Retry-After header - wait longer (60 seconds for free tier)
+                        wait_time = 60.0
+                        logger.warning(
+                            f"⏳ Rate limited (no Retry-After header), waiting {wait_time}s before retry"
+                        )
+                        await asyncio.sleep(wait_time)
+
+                    # Raise error to trigger retry logic with exponential backoff
+                    raise ValueError(
+                        f"Groq API HTTP error: 429 - Rate limit exceeded - {error_msg}"
+                    )
+
+                response.raise_for_status()
+
+                result = response.json()
+
+                # Extract response
+                if "choices" not in result or len(result["choices"]) == 0:
+                    raise ValueError("No choices returned from Groq API")
+
+                choice = result["choices"][0]
+                message = choice.get("message", {})
+                finish_reason = choice.get("finish_reason", "stop")
+
+                # Extract content (if present)
+                content = message.get("content")
+
+                # Extract tool calls (if present)
+                tool_calls = message.get("tool_calls")
+
+                # Extract usage info
+                usage = result.get("usage")
+
+                # Log usage info if available
+                if usage:
+                    logger.debug(
+                        f"   Token usage: prompt={usage.get('prompt_tokens', 0)}, "
+                        f"completion={usage.get('completion_tokens', 0)}, "
+                        f"total={usage.get('total_tokens', 0)}"
+                    )
+
+                duration = time.time() - start_time
+                logger.info(
+                    f"✅ Groq response generated in {duration:.3f}s "
+                    f"(finish_reason: {finish_reason}, tool_calls: {len(tool_calls) if tool_calls else 0})"
+                )
+
+                return {
+                    "content": content,
+                    "tool_calls": tool_calls,
+                    "finish_reason": finish_reason,
+                    "usage": usage,
+                }
+        except httpx.TimeoutException as err:
+            logger.error(f"❌ Request timed out after {self.timeout}s")
+            logger.error(f"   URL: {self.api_url}")
+            logger.error(f"   Request size: ~{payload_size / 1024:.1f} KB")
+            logger.error(
+                f"   Possible causes: 1) API slow/down, 2) Request too large ({payload_size / 1024:.1f} KB), 3) Network issues, 4) Invalid API key"
+            )
+            raise ValueError(
+                f"Groq API request timed out after {self.timeout}s. Check API status and request size."
+            ) from err
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                logger.error("❌ Authentication failed - API key may be invalid")
+                logger.error("   Check your GROQ_API_KEY2 in .env file")
+            raise
 
     def generate_response(
         self,

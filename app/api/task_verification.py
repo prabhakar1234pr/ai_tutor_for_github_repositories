@@ -1,6 +1,7 @@
 """
 API routes for task verification.
-Deep verification system using multi-layered evidence collection.
+AI agent-based verification system using Groq (Llama 3.1 70B) with GitHub API tools.
+Uses GROQ_API_KEY2 for higher token limits.
 """
 
 import logging
@@ -9,62 +10,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from supabase import Client
 
+from app.config import settings
 from app.core.supabase_client import get_supabase_client
-from app.services.llm_verifier import LLMVerifier
-from app.services.verification_pipeline import get_verification_pipeline
+from app.services.git_service import GitService
+from app.services.verification_agent import VerificationAgent
 from app.services.workspace_manager import WorkspaceManager
 from app.utils.clerk_auth import verify_clerk_token
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# Task verification prompt template
-TASK_VERIFICATION_PROMPT = """You are a code reviewer verifying if a student's code fulfills a task's requirements.
-
-**Task Description:**
-{task_description}
-
-**Task Requirements:**
-{task_requirements}
-
-**User's Code:**
-```{language}
-{user_code}
-```
-
-**Your Task:**
-Analyze the user's code and determine if it fulfills ALL requirements from the task description.
-
-**Verification Criteria:**
-1. Does the code implement what was asked?
-2. Does it meet all specific requirements mentioned?
-3. Does it produce the expected behavior/output?
-4. Are there any critical issues that prevent it from working?
-
-**Return ONLY valid JSON:**
-{{
-  "passed": true/false,
-  "overall_feedback": "Brief summary (2-3 sentences) explaining if requirements are met",
-  "requirements_check": {{
-    "requirement_1": {{
-      "met": true/false,
-      "feedback": "Specific feedback on this requirement"
-    }},
-    "requirement_2": {{
-      "met": true/false,
-      "feedback": "Specific feedback on this requirement"
-    }}
-  }},
-  "suggestions": ["suggestion1", "suggestion2"],
-  "code_quality": "good/acceptable/needs_improvement"
-}}
-
-**CRITICAL:**
-- Return ONLY the JSON object, no markdown, no extra text
-- Be specific about which requirements are met/not met
-- Provide constructive feedback
-- If passed=false, explain what's missing or incorrect
-"""
 
 
 # ============================================
@@ -114,17 +68,15 @@ async def verify_task(
     supabase: Client = Depends(get_supabase_client),
 ):
     """
-    Deep verification of task using multi-layered evidence collection.
+    Verify task using AI agent with GitHub API tools.
 
-    Collects evidence from:
-    - Git diff and status
-    - User's code state (file contents)
-    - Test execution results
-    - AST analysis
-    - Pattern matching
-    - GitHub API (notebook repo baseline)
+    The agent autonomously decides when and how to use GitHub API tools to:
+    - Compare commits to see what changed
+    - Get file contents at specific commits
+    - Analyze code changes against task requirements
+    - Provide detailed verification feedback
 
-    Uses LLM to make final verification decision with strict verification philosophy.
+    Uses Groq (Llama 3.1 70B) with function calling for intelligent tool use.
     """
     try:
         clerk_user_id = user_info["clerk_user_id"]
@@ -164,7 +116,7 @@ async def verify_task(
         # Verify task belongs to user's project
         concept_response = (
             supabase.table("concepts")
-            .select("concept_id, day_id")
+            .select("concept_id, day_id, order_index")
             .eq("concept_id", task["concept_id"])
             .execute()
         )
@@ -173,22 +125,26 @@ async def verify_task(
             raise HTTPException(status_code=404, detail="Concept not found")
 
         concept = concept_response.data[0]
+        current_concept_id = concept["concept_id"]
+        current_day_id = concept["day_id"]
+        current_concept_order = concept.get("order_index", 0)
 
         day_response = (
             supabase.table("roadmap_days")
-            .select("project_id")
-            .eq("day_id", concept["day_id"])
+            .select("project_id, day_number")
+            .eq("day_id", current_day_id)
             .execute()
         )
 
         if not day_response.data:
             raise HTTPException(status_code=404, detail="Day not found")
 
-        project_id = day_response.data[0]["project_id"]
+        day = day_response.data[0]
+        project_id = day["project_id"]
 
         project_response = (
             supabase.table("projects")
-            .select("project_id, github_access_token")
+            .select("project_id, user_repo_url, github_url")
             .eq("project_id", project_id)
             .eq("user_id", user_id)
             .execute()
@@ -196,6 +152,19 @@ async def verify_task(
 
         if not project_response.data:
             raise HTTPException(status_code=403, detail="Not authorized to verify this task")
+
+        project = project_response.data[0]
+        # Use user_repo_url (notebook repo) - agent should never see user's PAT
+        repo_url = project.get("user_repo_url")
+
+        if not repo_url:
+            raise HTTPException(
+                status_code=400,
+                detail="Project does not have a user repository URL (notebook repo)",
+            )
+
+        # Use app's GitHub token from .env (not user's PAT)
+        github_token = settings.github_access_token
 
         # Get base commit from task session (if exists)
         base_commit = None
@@ -212,39 +181,251 @@ async def verify_task(
         except Exception as e:
             logger.warning(f"Could not get task session base_commit: {e}")
 
+        # Get head commit (current HEAD)
+        head_commit = None
+        try:
+            git_service = GitService()
+            rev_result = git_service.git_rev_parse(workspace.container_id, "HEAD")
+            if rev_result.get("success"):
+                head_commit = rev_result.get("sha")
+            else:
+                logger.warning(f"Could not get HEAD commit: {rev_result.get('error')}")
+        except Exception as e:
+            logger.warning(f"Error getting HEAD commit: {e}")
+
+        if not head_commit:
+            raise HTTPException(status_code=400, detail="Could not determine current commit (HEAD)")
+
+        # Use base_commit if available, otherwise use HEAD~1 as fallback
+        if not base_commit:
+            logger.info("No base_commit found, using HEAD~1 as fallback")
+            rev_result = git_service.git_rev_parse(workspace.container_id, "HEAD~1")
+            if rev_result.get("success"):
+                base_commit = rev_result.get("sha")
+            else:
+                # If no parent commit, use HEAD itself (first commit)
+                base_commit = head_commit
+                logger.warning("No parent commit found, using HEAD as base_commit")
+
         # Extract task description and requirements
         task_description = task.get("description", "")
-        task_requirements = task_description
+        current_task_order = task.get("order_index", 0)
 
-        # Run multi-layered verification pipeline
-        logger.info(f"🔍 Running verification pipeline for task {task_id}...")
-        pipeline = get_verification_pipeline()
-        verification_state = await pipeline.run_verification(
-            task_id=task_id,
-            workspace_id=request.workspace_id,
-            base_commit=base_commit,
+        # Fetch previous concept summaries (max 5, skip for 1st concept)
+        previous_concept_summaries = []
+        if current_concept_order > 0:  # Skip for 1st concept (order_index 0)
+            try:
+                # Get all days for this project with their order
+                all_days_response = (
+                    supabase.table("roadmap_days")
+                    .select("day_id, day_number")
+                    .eq("project_id", project_id)
+                    .order("day_number", desc=False)
+                    .execute()
+                )
+
+                if all_days_response.data:
+                    # Build list of all concepts with their ordering
+                    all_concepts_with_order = []
+                    for day_data in all_days_response.data:
+                        day_id = day_data["day_id"]
+                        day_order = day_data.get("day_number", 0)
+
+                        concepts_for_day = (
+                            supabase.table("concepts")
+                            .select("concept_id, order_index")
+                            .eq("day_id", day_id)
+                            .order("order_index", desc=False)
+                            .execute()
+                        )
+
+                        if concepts_for_day.data:
+                            for concept_data in concepts_for_day.data:
+                                concept_order = concept_data.get("order_index", 0)
+                                # Create composite key: (day_order, concept_order) for sorting
+                                all_concepts_with_order.append(
+                                    {
+                                        "concept_id": concept_data["concept_id"],
+                                        "sort_key": (day_order, concept_order),
+                                    }
+                                )
+
+                    # Sort by (day_order, concept_order)
+                    all_concepts_with_order.sort(key=lambda x: x["sort_key"])
+
+                    # Find current concept position
+                    current_position = None
+                    for idx, concept_item in enumerate(all_concepts_with_order):
+                        if concept_item["concept_id"] == current_concept_id:
+                            current_position = idx
+                            break
+
+                    # Get previous 5 concepts
+                    if current_position is not None and current_position > 0:
+                        start_idx = max(0, current_position - 5)
+                        previous_concept_items = all_concepts_with_order[start_idx:current_position]
+                        previous_concept_ids = [
+                            item["concept_id"] for item in previous_concept_items
+                        ]
+
+                        # Get summaries and titles
+                        if previous_concept_ids:
+                            summaries_response = (
+                                supabase.table("concept_summaries")
+                                .select("concept_id, summary_text")
+                                .in_("concept_id", previous_concept_ids)
+                                .execute()
+                            )
+
+                            concepts_info_response = (
+                                supabase.table("concepts")
+                                .select("concept_id, title")
+                                .in_("concept_id", previous_concept_ids)
+                                .execute()
+                            )
+
+                            concepts_info = {
+                                c["concept_id"]: c.get("title", "")
+                                for c in (concepts_info_response.data or [])
+                            }
+
+                            summaries_map = {
+                                s["concept_id"]: s.get("summary_text", "")
+                                for s in (summaries_response.data or [])
+                            }
+
+                            # Build list maintaining order
+                            for concept_id in previous_concept_ids:
+                                summary_text = summaries_map.get(concept_id, "")
+                                if summary_text:
+                                    previous_concept_summaries.append(
+                                        {
+                                            "concept_title": concepts_info.get(
+                                                concept_id, "Unknown"
+                                            ),
+                                            "summary": summary_text,
+                                        }
+                                    )
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch previous concept summaries: {e}")
+
+        # Fetch previous task descriptions (max 5, exclude GitHub tasks, skip for 1st task)
+        previous_task_descriptions = []
+        if current_task_order > 0:  # Skip for 1st task (order_index 0)
+            try:
+                # Exclude GitHub-related tasks
+                github_task_types = ["github_profile", "github_connect", "create_repo"]
+
+                # Get all days for ordering
+                all_days_response = (
+                    supabase.table("roadmap_days")
+                    .select("day_id, day_number")
+                    .eq("project_id", project_id)
+                    .order("day_number", desc=False)
+                    .execute()
+                )
+
+                if all_days_response.data:
+                    # Build list of all tasks with their ordering
+                    all_tasks_with_order = []
+                    for day_data in all_days_response.data:
+                        day_id = day_data["day_id"]
+                        day_order = day_data.get("day_number", 0)
+
+                        # Get concepts for this day
+                        concepts_for_day = (
+                            supabase.table("concepts")
+                            .select("concept_id, order_index")
+                            .eq("day_id", day_id)
+                            .order("order_index", desc=False)
+                            .execute()
+                        )
+
+                        if concepts_for_day.data:
+                            for concept_data in concepts_for_day.data:
+                                concept_id = concept_data["concept_id"]
+                                concept_order = concept_data.get("order_index", 0)
+
+                                # Get tasks for this concept
+                                tasks_for_concept = (
+                                    supabase.table("tasks")
+                                    .select("task_id, title, description, order_index, task_type")
+                                    .eq("concept_id", concept_id)
+                                    .order("order_index", desc=False)
+                                    .execute()
+                                )
+
+                                if tasks_for_concept.data:
+                                    for task_data in tasks_for_concept.data:
+                                        # Skip GitHub tasks
+                                        if task_data.get("task_type") not in github_task_types:
+                                            task_order = task_data.get("order_index", 0)
+                                            # Create composite key: (day_order, concept_order, task_order)
+                                            all_tasks_with_order.append(
+                                                {
+                                                    "task_id": task_data["task_id"],
+                                                    "title": task_data.get("title", ""),
+                                                    "description": task_data.get("description", ""),
+                                                    "sort_key": (
+                                                        day_order,
+                                                        concept_order,
+                                                        task_order,
+                                                    ),
+                                                }
+                                            )
+
+                    # Sort by (day_order, concept_order, task_order)
+                    all_tasks_with_order.sort(key=lambda x: x["sort_key"])
+
+                    # Find current task position
+                    current_task_position = None
+                    for idx, task_item in enumerate(all_tasks_with_order):
+                        if task_item["task_id"] == task_id:
+                            current_task_position = idx
+                            break
+
+                    # Get previous 5 tasks
+                    if current_task_position is not None and current_task_position > 0:
+                        start_idx = max(0, current_task_position - 5)
+                        previous_task_items = all_tasks_with_order[start_idx:current_task_position]
+
+                        # Format task descriptions
+                        for task_item in previous_task_items:
+                            task_desc = task_item.get("description", "")
+                            if task_desc:
+                                previous_task_descriptions.append(
+                                    {
+                                        "task_title": task_item.get("title", "Unknown"),
+                                        "description": task_desc,
+                                    }
+                                )
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch previous task descriptions: {e}")
+
+        # Run agent-based verification
+        logger.info(
+            f"🤖 Running verification agent for task {task_id}: "
+            f"base={base_commit[:8]}, head={head_commit[:8]}"
         )
 
-        # Convert state to evidence dict for LLM
-        evidence = pipeline.get_evidence_for_llm(verification_state)
-
-        # Log pipeline results
-        if verification_state.warnings:
-            logger.warning(f"Pipeline warnings: {verification_state.warnings}")
-        if verification_state.errors:
-            logger.error(f"Pipeline errors: {verification_state.errors}")
-
-        # Run LLM verification with all evidence
-        logger.info("🤖 Running LLM verification with collected evidence...")
-        llm_verifier = LLMVerifier()
-        verification_result = await llm_verifier.verify_with_evidence(
+        agent = VerificationAgent()
+        verification_result = await agent.verify_task(
             task_description=task_description,
-            task_requirements=task_requirements,
-            evidence=evidence,
-            temperature=0.0,  # Strict mode
+            base_commit=base_commit,
+            head_commit=head_commit,
+            repo_url=repo_url,
+            github_token=github_token,  # App's token from .env (not user's PAT)
+            additional_context={
+                "task_title": task.get("title", ""),
+                "task_type": task.get("task_type", ""),
+                "previous_concept_summaries": previous_concept_summaries,
+                "previous_task_descriptions": previous_task_descriptions,
+            },
         )
 
-        # Extract results
+        # Extract results (already normalized by agent)
         passed = verification_result.get("passed", False)
         overall_feedback = verification_result.get("overall_feedback", "")
         requirements_check_raw = verification_result.get("requirements_check", {})
@@ -289,9 +470,9 @@ async def verify_task(
             user_id=user_id,
             workspace_id=request.workspace_id,
             verification_status=verification_status,
-            evidence=evidence,
+            evidence={"agent_verification": True, "repo_url": repo_url},
             verification_result=verification_result,
-            hints=hints,
+            hints=verification_result.get("hints", []),
         )
 
         # If verification passed, update memory ledger
@@ -300,7 +481,7 @@ async def verify_task(
                 supabase=supabase,
                 task_id=task_id,
                 concept_id=task["concept_id"],
-                evidence=evidence,
+                evidence={"changed_files": [], "file_contents": {}},  # Simplified for agent system
             )
 
         return TaskVerificationResponse(
@@ -349,11 +530,13 @@ async def _save_verification_results(
             "user_id": user_id,
             "workspace_id": workspace_id,
             "verification_status": verification_status,
-            "ast_analysis": evidence.get("ast_analysis", {}),
-            "github_evidence": evidence.get("github_evidence", {}),
-            "test_results": evidence.get("test_results", {}),
-            "git_diff": evidence.get("git_diff", ""),
-            "pattern_match_results": evidence.get("pattern_match_results", {}),
+            "ast_analysis": {},
+            "github_evidence": (
+                {"repo_url": evidence.get("repo_url")} if evidence.get("repo_url") else {}
+            ),
+            "test_results": {},
+            "git_diff": "",
+            "pattern_match_results": {},
             "llm_analysis": verification_result,
             "hints": hints,
             "error_message": None,
@@ -379,27 +562,13 @@ async def _update_memory_ledger_on_task_pass(
     """
     Update memory ledger in database when task passes verification.
 
-    Extracts files_touched and skills_unlocked from evidence and updates concepts table.
+    For agent-based system, this is simplified since we don't have detailed AST analysis.
     """
     try:
-        # Extract files_touched from evidence
-        changed_files = evidence.get("changed_files", [])
-        file_contents = evidence.get("file_contents", {})
-
-        # Get files that were actually modified/created
-        files_touched = list(set(changed_files + list(file_contents.keys())))
-
-        # Extract skills from AST analysis (simplified - can be enhanced with LLM)
-        ast_analysis = evidence.get("ast_analysis", {})
+        # For agent system, we don't have detailed file/skill extraction
+        # This can be enhanced later if needed
+        files_touched = evidence.get("changed_files", [])
         skills_unlocked = []
-
-        # Infer skills from code structure
-        if ast_analysis.get("functions"):
-            skills_unlocked.append("function_definition")
-        if ast_analysis.get("classes"):
-            skills_unlocked.append("class_definition")
-        if ast_analysis.get("imports"):
-            skills_unlocked.append("module_imports")
 
         # Get current concept data
         concept_response = (
