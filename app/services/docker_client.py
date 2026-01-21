@@ -4,6 +4,7 @@ Wrapper around the Docker SDK for container operations.
 """
 
 import logging
+import socket
 import threading
 
 from docker.errors import APIError, ImageNotFound, NotFound
@@ -50,6 +51,7 @@ class DockerClient:
         image: str = DEFAULT_IMAGE,
         memory_limit: str = DEFAULT_MEMORY_LIMIT,
         cpu_quota: int = DEFAULT_CPU_QUOTA,
+        ports: dict[str, tuple[str, int]] | None = None,
     ) -> tuple[str, str]:
         """
         Create a new container with resource limits and optional persistent volume.
@@ -60,6 +62,7 @@ class DockerClient:
             image: Docker image to use
             memory_limit: Memory limit (e.g., "512m")
             cpu_quota: CPU quota (50000 = 0.5 cores)
+            ports: Optional port mappings dict, e.g., {'3000/tcp': ('0.0.0.0', 3000)}
 
         Returns:
             Tuple of (container_id, status)
@@ -75,18 +78,30 @@ class DockerClient:
                 volumes = {volume_name: {"bind": "/workspace", "mode": "rw"}}
                 logger.info(f"Mounting volume {volume_name} to /workspace")
 
+            # Prepare port bindings for high-level API
+            # Format: {'container_port/tcp': host_port} e.g., {'3000/tcp': 30001}
+            port_bindings = None
+            if ports:
+                port_bindings = {}
+                for container_port, (host_ip, host_port) in ports.items():
+                    # High-level API format: {'3000/tcp': ('0.0.0.0', 30001)} or {'3000/tcp': 30001}
+                    port_bindings[container_port] = (host_ip, host_port)
+                logger.info(f"Port mappings: {port_bindings}")
+
+            # Use high-level API - more reliable for port mapping
             container = client.containers.create(
                 image=image,
                 name=name,
                 detach=True,
+                working_dir="/workspace",
+                volumes=volumes,
+                ports=port_bindings,
                 mem_limit=memory_limit,
                 cpu_period=DEFAULT_CPU_PERIOD,
                 cpu_quota=cpu_quota,
-                privileged=False,
                 network_mode="bridge",
-                working_dir="/workspace",
-                volumes=volumes,
             )
+
             logger.info(f"Container created: {name} ({container.short_id})")
             return container.id, "created"
         except ImageNotFound as e:
@@ -96,7 +111,7 @@ class DockerClient:
             logger.error(f"Failed to create container {name}: {e}")
             raise RuntimeError(f"Failed to create container: {e}") from e
 
-    def start_container(self, container_id: str) -> bool:
+    def start_container(self, container_id: str) -> tuple[bool, bool]:
         """
         Start a stopped container.
 
@@ -104,20 +119,45 @@ class DockerClient:
             container_id: Container ID or name
 
         Returns:
-            True if started successfully
+            Tuple of (success, is_port_conflict)
         """
         try:
             client = self._get_client()
             container = client.containers.get(container_id)
+
+            # Check current status
+            container.reload()
+            current_status = container.status
+            logger.info(f"Container {container_id[:12]} current status: {current_status}")
+
+            if current_status == "running":
+                logger.info(f"Container {container_id[:12]} already running")
+                return True, False
+
+            # Start the container
             container.start()
             logger.info(f"Container started: {container_id}")
-            return True
+            return True, False
         except NotFound:
             logger.error(f"Container not found: {container_id}")
-            return False
+            return False, False
         except APIError as e:
-            logger.error(f"Failed to start container {container_id}: {e}")
-            return False
+            error_msg = str(e)
+            # Check if error is due to port already in use
+            is_port_conflict = "port is already allocated" in error_msg or (
+                "bind:" in error_msg and "Only one usage" in error_msg
+            )
+            if is_port_conflict:
+                logger.error(
+                    f"Port conflict when starting container {container_id[:12]}: {error_msg}. "
+                    f"Port is already in use. Consider using dynamic port allocation or stopping the conflicting service."
+                )
+            else:
+                logger.error(f"Failed to start container {container_id}: {e}", exc_info=True)
+            return False, is_port_conflict
+        except Exception as e:
+            logger.error(f"Unexpected error starting container {container_id}: {e}", exc_info=True)
+            return False, False
 
     def stop_container(self, container_id: str, timeout: int = 10) -> bool:
         """
@@ -188,6 +228,29 @@ class DockerClient:
         except APIError as e:
             logger.error(f"Failed to get status for {container_id}: {e}")
             return "error"
+
+    def get_container_ports(self, container_id: str) -> dict[str, list[dict[str, str]]]:
+        """
+        Get port mappings for a container.
+
+        Args:
+            container_id: Container ID or name
+
+        Returns:
+            Dict mapping container ports to host bindings, e.g.:
+            {'3000/tcp': [{'HostIp': '0.0.0.0', 'HostPort': '3000'}]}
+        """
+        try:
+            client = self._get_client()
+            container = client.containers.get(container_id)
+            container.reload()
+            return container.attrs.get("NetworkSettings", {}).get("Ports", {})
+        except NotFound:
+            logger.warning(f"Container not found: {container_id}")
+            return {}
+        except APIError as e:
+            logger.error(f"Failed to get ports for {container_id}: {e}")
+            return {}
 
     def container_exists(self, container_id: str) -> bool:
         """
@@ -386,6 +449,99 @@ class DockerClient:
             return True
         except NotFound:
             return False
+
+    def is_port_available(self, port: int, host: str = "0.0.0.0") -> bool:
+        """
+        Check if a port is available for binding.
+        Checks both system-level port availability and Docker port bindings.
+
+        Args:
+            port: Port number to check
+            host: Host IP address (default: 0.0.0.0)
+
+        Returns:
+            True if port is available
+        """
+        # Check system-level port availability
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, port))
+        except OSError:
+            return False
+
+        # Check if Docker is using this port
+        try:
+            client = self._get_client()
+            containers = client.containers.list(all=True)
+            for container in containers:
+                container.reload()
+                # Check HostConfig.PortBindings (configured ports)
+                host_config_ports = container.attrs.get("HostConfig", {}).get("PortBindings", {})
+                for _container_port, bindings in host_config_ports.items():
+                    if bindings:
+                        for binding in bindings:
+                            if binding.get("HostPort") == str(port):
+                                logger.debug(
+                                    f"Port {port} is bound in HostConfig of container {container.id[:12]}"
+                                )
+                                return False
+
+                # Check NetworkSettings.Ports (actual bound ports)
+                network_ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+                for _container_port, bindings in network_ports.items():
+                    if bindings:
+                        for binding in bindings:
+                            if binding.get("HostPort") == str(port):
+                                logger.debug(
+                                    f"Port {port} is bound in NetworkSettings of container {container.id[:12]}"
+                                )
+                                return False
+        except Exception as e:
+            logger.debug(f"Error checking Docker port bindings: {e}")
+            # If we can't check Docker bindings, assume port is available
+            # Docker will fail if it's actually in use
+
+        return True
+
+    def find_available_port(self, start_port: int, end_port: int = None, host: str = "0.0.0.0"):
+        """
+        Find an available port in the given range.
+
+        Args:
+            start_port: Starting port number
+            end_port: Ending port number (default: start_port + 1000)
+            host: Host IP address (default: 0.0.0.0)
+
+        Returns:
+            Available port number or None if none found
+        """
+        if end_port is None:
+            end_port = start_port + 1000
+
+        for port in range(start_port, end_port + 1):
+            if self.is_port_available(port, host):
+                logger.debug(f"Found available port: {port}")
+                return port
+            else:
+                logger.debug(f"Port {port} is not available, trying next...")
+        logger.warning(f"No available port found in range {start_port}-{end_port}")
+        return None
+
+    def check_port_conflict_error(self, error: Exception) -> bool:
+        """
+        Check if an error is due to a port conflict.
+
+        Args:
+            error: Exception to check
+
+        Returns:
+            True if error is a port conflict
+        """
+        error_msg = str(error)
+        return "port is already allocated" in error_msg or (
+            "bind:" in error_msg and "Only one usage" in error_msg
+        )
 
 
 # Singleton instance

@@ -11,7 +11,7 @@ from supabase import Client
 
 from app.core.supabase_client import get_supabase_client
 from app.services.llm_verifier import LLMVerifier
-from app.services.verification_evidence import VerificationEvidenceCollector
+from app.services.verification_pipeline import get_verification_pipeline
 from app.services.workspace_manager import WorkspaceManager
 from app.utils.clerk_auth import verify_clerk_token
 
@@ -197,9 +197,6 @@ async def verify_task(
         if not project_response.data:
             raise HTTPException(status_code=403, detail="Not authorized to verify this task")
 
-        project = project_response.data[0]
-        github_token = project.get("github_access_token")
-
         # Get base commit from task session (if exists)
         base_commit = None
         try:
@@ -219,14 +216,23 @@ async def verify_task(
         task_description = task.get("description", "")
         task_requirements = task_description
 
-        # Collect all evidence
-        logger.info(f"🔍 Collecting verification evidence for task {task_id}...")
-        evidence_collector = VerificationEvidenceCollector(github_token=github_token)
-        evidence = await evidence_collector.collect_all_evidence(
+        # Run multi-layered verification pipeline
+        logger.info(f"🔍 Running verification pipeline for task {task_id}...")
+        pipeline = get_verification_pipeline()
+        verification_state = await pipeline.run_verification(
             task_id=task_id,
             workspace_id=request.workspace_id,
             base_commit=base_commit,
         )
+
+        # Convert state to evidence dict for LLM
+        evidence = pipeline.get_evidence_for_llm(verification_state)
+
+        # Log pipeline results
+        if verification_state.warnings:
+            logger.warning(f"Pipeline warnings: {verification_state.warnings}")
+        if verification_state.errors:
+            logger.error(f"Pipeline errors: {verification_state.errors}")
 
         # Run LLM verification with all evidence
         logger.info("🤖 Running LLM verification with collected evidence...")

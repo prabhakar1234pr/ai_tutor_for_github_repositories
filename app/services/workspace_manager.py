@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from app.core.supabase_client import get_supabase_client
 from app.services.docker_client import DockerClient, get_docker_client
 from app.services.git_service import GitService
+from app.services.preview_proxy import PORT_MAPPING
 
 logger = logging.getLogger(__name__)
 
@@ -99,13 +100,25 @@ class WorkspaceManager:
         container_name = f"gitguide-ws-{workspace_id[:8]}"
         volume_name = self._get_volume_name(workspace_id)
 
-        # Create container with persistent volume
+        # Default port mappings for local development
+        # Use ports 30001-30010 to avoid conflicts with common services (3000=frontend, 8000=backend API)
+        # Container ports map to host ports using centralized PORT_MAPPING configuration
+        default_ports = {
+            f"{container_port}/tcp": ("0.0.0.0", host_port)
+            for container_port, host_port in PORT_MAPPING.items()
+        }
+
+        # Create container with persistent volume and port mappings
         container_id, status = self.docker.create_container(
-            name=container_name, volume_name=volume_name
+            name=container_name, volume_name=volume_name, ports=default_ports
         )
 
         # Start container immediately
-        self.docker.start_container(container_id)
+        success, _ = self.docker.start_container(container_id)
+        if not success:
+            logger.warning(
+                f"Container {container_id[:12]} failed to start immediately after creation"
+            )
         status = self.docker.get_container_status(container_id)
 
         # Save to database
@@ -184,6 +197,33 @@ class WorkspaceManager:
 
         return self._row_to_workspace(result.data[0])
 
+    def get_workspaces_by_project(self, project_id: str) -> list[Workspace]:
+        """
+        Get all workspaces for a project.
+
+        Args:
+            project_id: Project's UUID
+
+        Returns:
+            List of Workspace objects
+        """
+        result = (
+            self.supabase.table(self.table_name).select("*").eq("project_id", project_id).execute()
+        )
+
+        return [self._row_to_workspace(row) for row in result.data]
+
+    def get_all_workspaces(self) -> list[Workspace]:
+        """
+        Get all workspaces from the database.
+
+        Returns:
+            List of all Workspace objects
+        """
+        result = self.supabase.table(self.table_name).select("*").execute()
+
+        return [self._row_to_workspace(row) for row in result.data]
+
     def get_or_create_workspace(self, user_id: str, project_id: str) -> Workspace:
         """
         Get existing workspace or create new one.
@@ -222,13 +262,16 @@ class WorkspaceManager:
         logger.info("[GET_OR_CREATE] No existing workspace, creating new one")
         return self.create_workspace(user_id, project_id)
 
-    def _recreate_container(self, workspace: Workspace) -> Workspace:
+    def _recreate_container(
+        self, workspace: Workspace, use_available_ports: bool = False
+    ) -> Workspace:
         """
         Recreate a container for an orphaned workspace.
         Reuses the existing volume so user files are preserved.
 
         Args:
             workspace: Existing workspace with missing container
+            use_available_ports: If True, find available ports dynamically instead of using PORT_MAPPING
 
         Returns:
             Updated Workspace object with new container
@@ -236,13 +279,48 @@ class WorkspaceManager:
         container_name = f"gitguide-ws-{workspace.workspace_id[:8]}"
         volume_name = self._get_volume_name(workspace.workspace_id)
 
-        # Create new container with existing volume (files are preserved)
+        # Port mappings for local development
+        if use_available_ports:
+            # Find available ports dynamically
+            logger.info("[RECREATE_CONTAINER] Finding available ports dynamically...")
+            ports = {}
+            base_port = 30001
+            for container_port in PORT_MAPPING.keys():
+                logger.debug(
+                    f"[RECREATE_CONTAINER] Looking for available port starting from {base_port} for container port {container_port}"
+                )
+                available_port = self.docker.find_available_port(base_port, base_port + 100)
+                if available_port:
+                    ports[f"{container_port}/tcp"] = ("0.0.0.0", available_port)
+                    logger.info(
+                        f"[RECREATE_CONTAINER] Mapped container port {container_port} to host port {available_port}"
+                    )
+                    base_port = available_port + 1
+                else:
+                    logger.warning(
+                        f"[RECREATE_CONTAINER] Could not find available port for container port {container_port}, using default {PORT_MAPPING[container_port]}"
+                    )
+                    ports[f"{container_port}/tcp"] = ("0.0.0.0", PORT_MAPPING[container_port])
+                    base_port = PORT_MAPPING[container_port] + 1
+            logger.info(f"[RECREATE_CONTAINER] Using dynamically allocated ports: {ports}")
+        else:
+            # Use default port mappings from PORT_MAPPING configuration
+            ports = {
+                f"{container_port}/tcp": ("0.0.0.0", host_port)
+                for container_port, host_port in PORT_MAPPING.items()
+            }
+
+        # Create new container with existing volume (files are preserved) and port mappings
         container_id, status = self.docker.create_container(
-            name=container_name, volume_name=volume_name
+            name=container_name, volume_name=volume_name, ports=ports
         )
 
         # Start container immediately
-        self.docker.start_container(container_id)
+        success, _ = self.docker.start_container(container_id)
+        if not success:
+            logger.warning(
+                f"Container {container_id[:12]} failed to start immediately after recreation"
+            )
         status = self.docker.get_container_status(container_id)
 
         # Update database with new container_id
@@ -443,13 +521,69 @@ class WorkspaceManager:
             logger.error(f"[START_WORKSPACE] No container_id for workspace: {workspace_id}")
             return False
 
-        success = self.docker.start_container(workspace.container_id)
-        logger.info(f"[START_WORKSPACE] Container start result: {success}")
-        if success:
-            self._update_status(workspace_id, "running")
-            self._update_last_active(workspace_id)
+        try:
+            success, is_port_conflict = self.docker.start_container(workspace.container_id)
+            logger.info(
+                f"[START_WORKSPACE] Container start result: {success}, port_conflict: {is_port_conflict}"
+            )
 
-        return success
+            if not success and is_port_conflict:
+                logger.warning(
+                    f"[START_WORKSPACE] Container start failed for {workspace.container_id[:12]} due to port conflict. "
+                    f"Will recreate with available ports..."
+                )
+                # Recreate container with available port mappings
+                logger.info(
+                    "[START_WORKSPACE] Recreating container with available port mappings..."
+                )
+                try:
+                    # Stop and remove old container
+                    self.docker.stop_container(workspace.container_id)
+                    self.docker.remove_container(workspace.container_id)
+                except Exception:
+                    pass  # Container might already be stopped/removed
+
+                # Recreate with available ports
+                updated_workspace = self._recreate_container(workspace, use_available_ports=True)
+                if updated_workspace.container_status == "running":
+                    logger.info("[START_WORKSPACE] Successfully recreated and started container")
+                    return True
+                else:
+                    logger.error("[START_WORKSPACE] Failed to start recreated container")
+                    return False
+
+            if success:
+                self._update_status(workspace_id, "running")
+                self._update_last_active(workspace_id)
+
+            return success
+        except Exception as e:
+            logger.error(f"[START_WORKSPACE] Exception starting container: {e}", exc_info=True)
+            # Check if it's a port conflict
+            is_port_conflict = self.docker.check_port_conflict_error(e)
+
+            # Try to recreate on any exception, especially port conflicts
+            try:
+                logger.info(
+                    "[START_WORKSPACE] Attempting to recreate container due to exception..."
+                )
+                if workspace.container_id:
+                    try:
+                        self.docker.stop_container(workspace.container_id)
+                        self.docker.remove_container(workspace.container_id)
+                    except Exception:
+                        pass
+                # Use available ports if it's a port conflict, otherwise use default ports
+                updated_workspace = self._recreate_container(
+                    workspace, use_available_ports=is_port_conflict
+                )
+                return updated_workspace.container_status == "running"
+            except Exception as recreate_error:
+                logger.error(
+                    f"[START_WORKSPACE] Failed to recreate container: {recreate_error}",
+                    exc_info=True,
+                )
+                return False
 
     def stop_workspace(self, workspace_id: str) -> bool:
         """

@@ -89,21 +89,45 @@ async def extract_patterns_from_tests(state: RoadmapAgentState) -> RoadmapAgentS
 
             if pattern_result["success"]:
                 # Update task with patterns
-                supabase.table("tasks").update(
-                    {"verification_patterns": pattern_result["patterns"]}
-                ).eq("task_id", task["task_id"]).execute()
+                try:
+                    supabase.table("tasks").update(
+                        {"verification_patterns": pattern_result["patterns"]}
+                    ).eq("task_id", task["task_id"]).execute()
 
-                patterns_extracted += 1
-                logger.debug(f"✅ Extracted patterns for task: {task['task_id']}")
+                    patterns_extracted += 1
+                    logger.debug(f"✅ Extracted patterns for task: {task['task_id']}")
+                except Exception as update_error:
+                    # Handle case where updated_at column doesn't exist (database schema issue)
+                    error_msg = str(update_error)
+                    if "updated_at" in error_msg.lower():
+                        logger.warning(
+                            f"⚠️ Database schema issue: updated_at column missing in tasks table. "
+                            f"Patterns extracted but not saved for task {task['task_id']}. "
+                            f"Please add updated_at column to tasks table."
+                        )
+                    else:
+                        logger.error(
+                            f"Failed to update task {task['task_id']} with patterns: {update_error}"
+                        )
             else:
                 logger.warning(
                     f"⚠️ Pattern extraction failed for task {task['task_id']}: "
                     f"{pattern_result.get('error', 'Unknown error')}"
                 )
                 # Store empty patterns as fallback
-                supabase.table("tasks").update({"verification_patterns": {}}).eq(
-                    "task_id", task["task_id"]
-                ).execute()
+                try:
+                    supabase.table("tasks").update({"verification_patterns": {}}).eq(
+                        "task_id", task["task_id"]
+                    ).execute()
+                except Exception as update_error:
+                    error_msg = str(update_error)
+                    if "updated_at" in error_msg.lower():
+                        logger.warning(
+                            f"⚠️ Database schema issue: updated_at column missing. "
+                            f"Cannot save empty patterns for task {task['task_id']}"
+                        )
+                    else:
+                        logger.error(f"Failed to update task with empty patterns: {update_error}")
 
         except Exception as e:
             logger.error(
@@ -115,7 +139,15 @@ async def extract_patterns_from_tests(state: RoadmapAgentState) -> RoadmapAgentS
                     "task_id", task["task_id"]
                 ).execute()
             except Exception as update_error:
-                logger.error(f"Failed to update task with empty patterns: {update_error}")
+                error_msg = str(update_error)
+                if "updated_at" in error_msg.lower():
+                    logger.warning(
+                        f"⚠️ Database schema issue: updated_at column missing in tasks table. "
+                        f"Cannot save empty patterns for task {task['task_id']}. "
+                        f"Please add updated_at column to tasks table."
+                    )
+                else:
+                    logger.error(f"Failed to update task with empty patterns: {update_error}")
 
     logger.info(f"✅ Extracted patterns for {patterns_extracted}/{len(tasks)} tasks")
 

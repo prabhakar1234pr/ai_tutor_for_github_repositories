@@ -8,6 +8,7 @@ from app.api.chatbot import router as chatbot_router
 from app.api.files import router as files_router
 from app.api.git import router as git_router
 from app.api.github_consent import router as github_consent_router
+from app.api.preview import router as preview_router
 from app.api.progress import router as progress_router
 from app.api.project_chunks_embeddings import router as project_chunks_embeddings_router
 from app.api.projects import router as projects_router
@@ -128,3 +129,4 @@ app.include_router(github_consent_router, prefix="/api/github", tags=["github"])
 app.include_router(git_router, prefix="/api/git", tags=["git"])
 app.include_router(task_sessions_router, prefix="/api/task-sessions", tags=["task-sessions"])
 app.include_router(task_verification_router, prefix="/api/tasks", tags=["task-verification"])
+app.include_router(preview_router, prefix="/api/preview", tags=["preview"])

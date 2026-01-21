@@ -10,6 +10,8 @@ from app.agents.day0 import get_day_0_content
 from app.core.supabase_client import get_supabase_client
 from app.services.embedding_pipeline import run_embedding_pipeline
 from app.services.qdrant_service import get_qdrant_service
+from app.services.terminal_service import get_terminal_service
+from app.services.workspace_manager import get_workspace_manager
 from app.utils.clerk_auth import verify_clerk_token
 from app.utils.github_utils import extract_project_name, validate_github_url
 from app.utils.markdown_sanitizer import sanitize_markdown_content
@@ -669,6 +671,42 @@ async def delete_project(
 
         logger.info(f"   Project found: {project_name} (project_id={project_id})")
 
+        # Step 0: Delete all workspaces and terminal sessions for this project
+        workspace_manager = get_workspace_manager()
+        workspaces = workspace_manager.get_workspaces_by_project(project_id)
+        logger.info(f"   Found {len(workspaces)} workspace(s) to clean up")
+
+        terminal_service = get_terminal_service()
+        total_sessions_deleted = 0
+
+        for workspace in workspaces:
+            logger.info(f"   Cleaning up workspace {workspace.workspace_id[:8]}...")
+
+            # Delete terminal sessions for this workspace
+            sessions_deleted = terminal_service.delete_sessions_for_workspace(
+                workspace.workspace_id
+            )
+            total_sessions_deleted += sessions_deleted
+            logger.info(
+                f"   Deleted {sessions_deleted} terminal session(s) for workspace {workspace.workspace_id[:8]}"
+            )
+
+            # Destroy workspace (stops container, removes container, deletes volume)
+            try:
+                workspace_manager.destroy_workspace(workspace.workspace_id, delete_volume=True)
+                logger.info(
+                    f"   ✅ Destroyed workspace {workspace.workspace_id[:8]} (container and volume)"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"   ⚠️  Failed to destroy workspace {workspace.workspace_id[:8]}: {e}"
+                )
+                # Continue with project deletion even if workspace cleanup fails
+
+        logger.info(
+            f"✅ Cleaned up {len(workspaces)} workspace(s) and {total_sessions_deleted} terminal session(s)"
+        )
+
         # Step 1: Delete embeddings from Qdrant
         qdrant_deleted_count = 0
         try:
@@ -704,6 +742,8 @@ async def delete_project(
             "message": "Project deleted successfully",
             "project_id": project_id,
             "project_name": project_name,
+            "deleted_workspaces": len(workspaces),
+            "deleted_terminal_sessions": total_sessions_deleted,
             "deleted_embeddings": qdrant_deleted_count,
         }
 

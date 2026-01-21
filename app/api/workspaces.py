@@ -10,7 +10,9 @@ from pydantic import BaseModel
 from supabase import Client
 
 from app.core.supabase_client import get_supabase_client
+from app.services.docker_client import get_docker_client
 from app.services.external_commit_service import ExternalCommitService
+from app.services.preview_proxy import PORT_MAPPING, get_preview_proxy
 from app.services.workspace_manager import Workspace, get_workspace_manager
 from app.utils.clerk_auth import verify_clerk_token
 from app.utils.db_helpers import get_user_id_from_clerk
@@ -391,6 +393,65 @@ async def clone_repo(
         raise HTTPException(status_code=500, detail=f"Failed to clone repo: {str(e)}") from e
 
 
+@router.post("/{workspace_id}/recreate")
+async def recreate_workspace(
+    workspace_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+):
+    """
+    Recreate workspace container with port mappings (preserves files).
+    Use this if your container was created before port mapping support was added.
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+        user_id = get_user_id_from_clerk(supabase, clerk_user_id)
+
+        manager = get_workspace_manager()
+        workspace = manager.get_workspace(workspace_id)
+
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        # Verify ownership
+        if workspace.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Stop container if running
+        if workspace.container_status == "running":
+            manager.stop_workspace(workspace_id)
+
+        # Remove old container
+        if workspace.container_id:
+            manager.docker.remove_container(workspace.container_id)
+
+        # Recreate container with port mappings (files preserved via volume)
+        updated_workspace = manager._recreate_container(workspace)
+
+        # Build port info from centralized PORT_MAPPING
+        ports = {
+            f"{container_port}/tcp": f"http://localhost:{host_port}"
+            for container_port, host_port in PORT_MAPPING.items()
+        }
+
+        return {
+            "success": True,
+            "message": "Workspace recreated with port mappings",
+            "workspace_id": workspace_id,
+            "container_id": updated_workspace.container_id,
+            "status": updated_workspace.container_status,
+            "ports": ports,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error recreating workspace: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to recreate workspace: {str(e)}"
+        ) from e
+
+
 @router.get("/{workspace_id}/status")
 async def get_workspace_status(
     workspace_id: str,
@@ -416,10 +477,19 @@ async def get_workspace_status(
 
         status = manager.get_workspace_status(workspace_id)
 
+        # Get preview info using preview proxy service
+        preview_proxy = get_preview_proxy()
+        preview_info = preview_proxy.get_preview_urls(
+            workspace_id=workspace_id,
+            container_id=workspace.container_id,
+            base_url=None,  # Local development uses direct localhost URLs
+        )
+
         return {
             "success": True,
             "workspace_id": workspace_id,
             "status": status,
+            "preview": preview_info,
         }
 
     except HTTPException:
@@ -427,3 +497,83 @@ async def get_workspace_status(
     except Exception as e:
         logger.error(f"Error fetching workspace status: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch status: {str(e)}") from e
+
+
+@router.get("/{workspace_id}/ports/check")
+async def check_port_connectivity(
+    workspace_id: str,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+):
+    """
+    Check if container port mappings exist and provide diagnostic info.
+    """
+    try:
+        clerk_user_id = user_info["clerk_user_id"]
+        user_id = get_user_id_from_clerk(supabase, clerk_user_id)
+
+        manager = get_workspace_manager()
+        workspace = manager.get_workspace(workspace_id)
+
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        # Verify ownership
+        if workspace.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        docker_client = get_docker_client()
+
+        # Get actual port mappings from container
+        port_mappings = {}
+        if workspace.container_id:
+            port_mappings = docker_client.get_container_ports(workspace.container_id)
+
+        # Check if port mappings exist
+        has_port_mappings = bool(port_mappings)
+
+        # Format port info
+        ports_info = {}
+        for container_port, bindings in port_mappings.items():
+            if bindings:
+                host_port = bindings[0].get("HostPort")
+                host_ip = bindings[0].get("HostIp", "0.0.0.0")
+                if host_port:
+                    ports_info[container_port] = {
+                        "host_port": host_port,
+                        "host_ip": host_ip,
+                        "url": f"http://localhost:{host_port}",
+                    }
+
+        # Provide recommendations
+        recommendations = []
+        if not has_port_mappings:
+            recommendations.append(
+                "⚠️ No port mappings found. Your container was likely created before port mapping support was added."
+            )
+            recommendations.append(
+                "💡 Solution: Use POST /api/workspaces/{workspace_id}/recreate to recreate the container with port mappings."
+            )
+        else:
+            recommendations.append("✅ Port mappings found. If connection fails, check:")
+            recommendations.append(
+                "   1. Server is listening on 0.0.0.0 inside container (not 127.0.0.1)"
+            )
+            recommendations.append("   2. Server is actually running (check terminal)")
+            recommendations.append("   3. No firewall blocking the port")
+            recommendations.append("   4. Use the exact URL shown above (not localhost:3000)")
+
+        return {
+            "success": True,
+            "workspace_id": workspace_id,
+            "container_id": workspace.container_id,
+            "has_port_mappings": has_port_mappings,
+            "ports": ports_info,
+            "recommendations": recommendations,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking ports: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to check ports: {str(e)}") from e

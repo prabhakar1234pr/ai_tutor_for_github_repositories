@@ -323,6 +323,11 @@ class TerminalService:
         stream_info = self._active_streams.get(session_id)
         if not stream_info:
             logger.warning(f"[WRITE_INPUT] No active stream for session {session_id}")
+            # Try to get session and recreate stream if possible
+            session = self.get_session(session_id)
+            if session:
+                logger.info(f"[WRITE_INPUT] Attempting to recreate stream for session {session_id}")
+                # Note: Stream recreation should be handled by the WebSocket handler
             return False
 
         try:
@@ -433,6 +438,39 @@ class TerminalService:
 
         logger.info(f"Terminal session deleted: {session_id}")
         return True
+
+    def delete_sessions_for_workspace(self, workspace_id: str) -> int:
+        """
+        Delete all terminal sessions for a workspace.
+
+        Args:
+            workspace_id: Workspace UUID
+
+        Returns:
+            Number of sessions deleted
+        """
+        # Get all sessions for the workspace (both active and inactive)
+        result = (
+            self.supabase.table(self.table_name)
+            .select("*")
+            .eq("workspace_id", workspace_id)
+            .execute()
+        )
+        all_sessions = [self._row_to_session(row) for row in result.data]
+
+        deleted_count = 0
+        for session in all_sessions:
+            try:
+                self.close_session(session.session_id)
+                deleted_count += 1
+            except Exception as e:
+                logger.warning(f"Error closing session {session.session_id}: {e}")
+
+        # Delete all sessions from database
+        self.supabase.table(self.table_name).delete().eq("workspace_id", workspace_id).execute()
+
+        logger.info(f"Deleted {deleted_count} terminal sessions for workspace {workspace_id}")
+        return deleted_count
 
     def _check_for_commit(self, session_id: str, output_data: bytes) -> None:
         """

@@ -11,96 +11,83 @@ from app.utils.json_parser import parse_llm_json_response_async
 
 logger = logging.getLogger(__name__)
 
-# Enhanced verification prompt that uses all evidence types
-VERIFICATION_PROMPT = """You are a STRICT code reviewer verifying if a student's code fulfills task requirements.
+# Enhanced verification prompt with multi-layered evidence
+VERIFICATION_PROMPT = """You are a STRICT code reviewer. Verify if the student's code fulfills ALL task requirements.
 
-**VERIFICATION PHILOSOPHY:**
-- Assume code is WRONG unless proven correct
-- Be CRITICAL - find problems, don't overlook them
-- NO partial credit - either it works or it doesn't
-- Code must be COMPLETE, CORRECT, and FUNCTIONAL
-
-**Task Description:**
+**TASK DESCRIPTION:**
 {task_description}
 
-**Task Requirements:**
-{task_requirements}
+**EVIDENCE COLLECTED:**
 
-**Evidence Collected:**
+1. PROJECT LANGUAGE: {language}
 
-1. **Git Changes:**
-{git_diff}
-
-2. **Changed Files:**
+2. FILES CHANGED:
 {changed_files}
 
-3. **File Contents:**
+3. CODE CONTENTS:
 {file_contents}
 
-4. **Test Results:**
+4. GIT DIFF (what changed):
+{git_diff}
+
+5. TEST RESULTS:
 {test_results}
 
-5. **AST Analysis:**
+6. AST ANALYSIS (code structure):
 {ast_analysis}
 
-6. **Pattern Match Results:**
+7. HTTP TEST RESULTS (for web tasks):
+{http_test_results}
+
+8. PATTERN MATCHING:
 {pattern_match_results}
 
-7. **GitHub Baseline (Notebook Repo):**
-{github_evidence}
+**VERIFICATION RULES (STRICT):**
+1. If tests FAILED → task MUST fail (unless test framework itself had issues)
+2. If syntax errors detected → task MUST fail
+3. If required functions/routes/endpoints are missing → task MUST fail
+4. For web tasks: If HTTP test shows server not responding correctly → verify code structure at minimum
+5. Check package.json/requirements.txt for required dependencies
+6. Only PASS if ALL requirements are clearly met
 
-**Your Task:**
-Analyze ALL evidence and determine if the student's code fulfills ALL requirements.
+**VERIFICATION CHECKLIST:**
+- Does the code implement exactly what was asked?
+- Are all specific requirements from the description met?
+- Does the code produce the expected output/behavior?
+- Are there any critical bugs or issues?
 
-**Verification Checklist:**
-1. ✅ Does the code implement what was asked?
-2. ✅ Do the changes match the task requirements?
-3. ✅ Do tests pass (if tests exist)?
-4. ✅ Are required functions/classes present (from AST analysis)?
-5. ✅ Do pattern matches indicate correct structure?
-6. ✅ Is the code complete and functional?
-7. ✅ Are there any critical issues?
+**CRITICAL DISTINCTION - READ CAREFULLY:**
 
-**CRITICAL:**
-- If tests exist and FAIL, the task MUST fail
-- If required functions/classes are missing (from patterns), the task MUST fail
-- If code has syntax errors, the task MUST fail
-- Only pass if ALL requirements are met
+"issues_found" vs "suggestions" are DIFFERENT:
 
-**If FAILED, provide LeetCode-style hints:**
-- Guide the student toward the solution
-- Don't give direct answers
-- Point out what's missing or incorrect
-- Suggest approaches, not solutions
+- **"issues_found"**: ONLY actual problems that prevent code from working correctly
+  - Bugs, syntax errors, missing functionality, incorrect implementation
+  - If task PASSED and code works correctly, use empty array []
+  - Do NOT include code quality improvements here
 
-**Return ONLY valid JSON:**
+- **"suggestions"**: Optional enhancements and best practices
+  - Error handling improvements, code organization, best practices
+  - These are NOT issues - they are optional improvements
+  - Code can work perfectly fine without these suggestions
+
+**IMPORTANT**: Do NOT flag working code as having "issues" just because it could be improved. If the code works and meets requirements, "issues_found" should be empty [].
+
+**Return ONLY valid JSON (no markdown, no extra text):**
 {{
   "passed": true/false,
-  "overall_feedback": "Brief summary (2-3 sentences) explaining if requirements are met",
+  "overall_feedback": "2-3 sentence summary explaining decision",
   "requirements_check": {{
-    "requirement_1": {{
-      "met": true/false,
-      "feedback": "Specific feedback on this requirement"
-    }},
-    "requirement_2": {{
-      "met": true/false,
-      "feedback": "Specific feedback on this requirement"
-    }}
+    "code_implements_task": {{"met": true/false, "feedback": "..."}},
+    "meets_all_requirements": {{"met": true/false, "feedback": "..."}},
+    "no_critical_issues": {{"met": true/false, "feedback": "..."}}
   }},
-  "hints": ["hint1", "hint2"],  // Only if passed=false
-  "issues_found": ["issue1", "issue2"],  // List of problems detected
-  "suggestions": ["suggestion1", "suggestion2"],  // Improvement suggestions
+  "hints": ["Helpful hint if failed"],
+  "issues_found": ["ONLY actual problems: bugs, missing functionality, syntax errors. If task PASSED and code works, use empty array []."],
+  "suggestions": ["Optional code quality improvements, best practices, enhancements. These are NOT issues - they are optional improvements."],
   "code_quality": "good/acceptable/needs_improvement",
-  "test_status": "passed/failed/not_run",  // From test results
-  "pattern_match_status": "all_matched/partial/none"  // From pattern matching
+  "test_status": "passed/failed/not_run/error",
+  "pattern_match_status": "all_matched/partial/none"
 }}
-
-**CRITICAL JSON FORMATTING:**
-- Return ONLY the JSON object, no markdown, no extra text
-- Be specific about which requirements are met/not met
-- Provide constructive feedback
-- If passed=false, explain what's missing or incorrect
-- Use hints to guide, not to give answers
 """
 
 
@@ -126,7 +113,7 @@ class LLMVerifier:
         Args:
             task_description: Task description
             task_requirements: Task requirements (can be same as description)
-            evidence: Evidence dict from VerificationEvidenceCollector
+            evidence: Evidence dict from VerificationPipeline
             temperature: LLM temperature (0.0 for strict, deterministic)
 
         Returns:
@@ -144,32 +131,55 @@ class LLMVerifier:
         """
         logger.info("Running LLM verification with collected evidence")
 
-        # Format evidence for prompt
+        # Get language
+        language = evidence.get("language", "unknown")
+
+        # Format evidence for prompt with reasonable size limits
         git_diff = evidence.get("git_diff", "No git diff available")
-        changed_files = "\n".join(evidence.get("changed_files", [])) or "No files changed"
+        changed_files_list = evidence.get("changed_files", [])[:15]
+        changed_files = "\n".join(f"- {f}" for f in changed_files_list) or "No files changed"
+
         file_contents_str = self._format_file_contents(evidence.get("file_contents", {}))
         test_results_str = self._format_test_results(evidence.get("test_results"))
         ast_analysis_str = self._format_ast_analysis(evidence.get("ast_analysis", {}))
         pattern_match_str = self._format_pattern_match(evidence.get("pattern_match_results"))
-        github_evidence_str = self._format_github_evidence(evidence.get("github_evidence"))
+        http_test_str = self._format_http_test_results(evidence.get("http_test_results"))
 
-        # Build prompt
+        # Include warnings/errors from pipeline
+        warnings = evidence.get("warnings", [])
+        if warnings:
+            logger.info(f"Pipeline warnings: {warnings}")
+
+        # Build prompt with balanced size limits
         prompt = VERIFICATION_PROMPT.format(
-            task_description=task_description,
-            task_requirements=task_requirements,
-            git_diff=git_diff[:5000],  # Limit size
-            changed_files=changed_files,
-            file_contents=file_contents_str[:10000],  # Limit size
-            test_results=test_results_str,
-            ast_analysis=ast_analysis_str,
-            pattern_match_results=pattern_match_str,
-            github_evidence=github_evidence_str,
+            task_description=task_description[:500],  # More room for description
+            language=language,
+            git_diff=self._smart_truncate(git_diff, 1500),  # Keep important parts
+            changed_files=changed_files[:400],
+            file_contents=self._smart_truncate(file_contents_str, 3000),  # More room for code
+            test_results=test_results_str[:500] if test_results_str else "No tests run",
+            ast_analysis=ast_analysis_str[:400],
+            http_test_results=(
+                http_test_str[:400] if http_test_str else "Not a web task or server not running"
+            ),
+            pattern_match_results=(
+                pattern_match_str[:300] if pattern_match_str else "No patterns to match"
+            ),
         )
 
+        # Log prompt size for debugging
+        prompt_size = len(prompt)
+        logger.info(f"Prompt size: {prompt_size} chars")
+
+        # Emergency truncation only if really needed
+        if prompt_size > 12000:
+            logger.warning(f"Prompt size ({prompt_size}) exceeds limit, truncating...")
+            prompt = prompt[:12000] + "\n\n... (truncated due to size limit)"
+
         system_prompt = (
-            "You are a STRICT code reviewer. "
-            "Assume code is wrong unless proven correct. "
-            "Return ONLY valid JSON object, no markdown, no extra text."
+            "You are a STRICT but fair code reviewer. "
+            "Verify code against requirements. "
+            "Return ONLY valid JSON object, no markdown code blocks, no extra text."
         )
 
         try:
@@ -286,7 +296,7 @@ class LLMVerifier:
         return "\n".join(parts)
 
     def _format_github_evidence(self, github_evidence: dict[str, Any] | None) -> str:
-        """Format GitHub evidence for prompt."""
+        """Format GitHub evidence for prompt - keep minimal to avoid payload issues."""
         if not github_evidence:
             return "No GitHub baseline available"
 
@@ -297,6 +307,63 @@ class LLMVerifier:
         if repo_structure:
             parts.append(f"Repository structure: {len(repo_structure)} items")
         if files:
-            parts.append(f"Baseline files available: {', '.join(files.keys())}")
+            # Only list file names, not contents, and limit to 5 files
+            file_names = list(files.keys())[:5]
+            parts.append(f"Baseline files available: {', '.join(file_names)}")
+            if len(files) > 5:
+                parts.append(f"... and {len(files) - 5} more files")
 
         return "\n".join(parts) if parts else "GitHub baseline available but empty"
+
+    def _format_http_test_results(self, http_results: dict[str, Any] | None) -> str:
+        """Format HTTP test results for prompt."""
+        if not http_results:
+            return "No HTTP testing performed"
+
+        if not http_results.get("is_web_task"):
+            return "Not a web task"
+
+        parts = []
+
+        if http_results.get("server_detected"):
+            port = http_results.get("port", "unknown")
+            parts.append(f"✓ Server detected on port {port}")
+
+            endpoints = http_results.get("endpoints_tested", [])
+            for endpoint in endpoints:
+                url = endpoint.get("url", "")
+                status = endpoint.get("status_code", "")
+                response = endpoint.get("response", "")[:200]
+                parts.append(f"  - {url}: Status {status}")
+                if response:
+                    parts.append(f"    Response: {response}")
+        else:
+            parts.append("✗ No server detected running")
+            parts.append(
+                "  Student may need to start the server with 'node server.js' or 'npm start'"
+            )
+            if http_results.get("message"):
+                parts.append(f"  Note: {http_results['message']}")
+
+        return "\n".join(parts)
+
+    def _smart_truncate(self, text: str, max_length: int) -> str:
+        """
+        Smart truncation that tries to preserve important parts.
+        Keeps beginning and end, truncates middle.
+        """
+        if len(text) <= max_length:
+            return text
+
+        # For very short limits, just truncate from end
+        if max_length < 500:
+            return text[:max_length] + "..."
+
+        # Keep 60% from beginning, 30% from end
+        begin_len = int(max_length * 0.6)
+        end_len = int(max_length * 0.3)
+
+        begin_part = text[:begin_len]
+        end_part = text[-end_len:]
+
+        return f"{begin_part}\n\n... (middle truncated) ...\n\n{end_part}"

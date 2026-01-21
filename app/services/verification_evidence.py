@@ -100,7 +100,7 @@ class VerificationEvidenceCollector:
         test_command = task.get("test_command")
         verification_patterns = task.get("verification_patterns") or {}
 
-        # 1. Git evidence
+        # 1. Git evidence - Use git diff from base_commit to HEAD
         git_diff_result = self.git_service.git_diff(
             container_id, base_commit=base_commit, head_commit="HEAD"
         )
@@ -109,23 +109,58 @@ class VerificationEvidenceCollector:
         git_diff = git_diff_result.get("diff", "") if isinstance(git_diff_result, dict) else ""
         git_status = git_status_result if isinstance(git_status_result, dict) else {}
 
-        # Extract changed files
+        # Extract changed files from git status
         changed_files = []
         if isinstance(git_status, dict):
             changed_files.extend(git_status.get("modified", []))
             changed_files.extend(git_status.get("staged", []))
             changed_files.extend(git_status.get("untracked", []))
 
+        # Also extract files from git diff (in case git status misses some)
+        if git_diff:
+            import re
+
+            diff_files = re.findall(r"^diff --git a/(.+?) b/", git_diff, re.MULTILINE)
+            for file_path in diff_files:
+                if file_path not in changed_files:
+                    changed_files.append(file_path)
+
+        # Filter out node_modules and other large/unnecessary files
+        filtered_files = [
+            f
+            for f in changed_files
+            if not f.startswith("node_modules/")
+            and not f.startswith(".git/")
+            and not f.endswith(".lock")
+            and not f.endswith(".log")
+            and f not in ["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]
+        ]
+
         # 2. File contents (limit to first 5 changed files, max 10KB each)
-        file_contents = {}
-        for file_path in changed_files[:5]:
+        # Always include package.json if it exists (for dependency verification)
+        files_to_read = list(filtered_files[:5])
+        if "package.json" not in files_to_read:
+            # Check if package.json exists and add it
             try:
-                file_result = self.file_system.read_file(container_id, file_path)
-                if file_result.get("success"):
-                    content = file_result.get("content", "")
-                    # Limit size
+                pkg_content = self.file_system.read_file(container_id, "package.json")
+                if pkg_content:  # read_file returns str | None, not dict
+                    files_to_read.append("package.json")
+            except Exception:
+                pass  # package.json doesn't exist, skip
+
+        file_contents = {}
+        for file_path in files_to_read:
+            try:
+                content = self.file_system.read_file(container_id, file_path)
+                if content:  # read_file returns str | None
+                    # Limit size to prevent payload too large errors
                     if len(content) <= 10000:
                         file_contents[file_path] = content
+                    else:
+                        logger.warning(
+                            f"File {file_path} too large ({len(content)} chars), truncating"
+                        )
+                        file_contents[file_path] = content[:10000] + "\n... (truncated)"
             except Exception as e:
                 logger.warning(f"Failed to read file {file_path}: {e}")
 
@@ -168,27 +203,26 @@ class VerificationEvidenceCollector:
                 language=language,
             )
 
-        # 6. GitHub evidence (notebook repo baseline) - optional, async
+        # 6. GitHub evidence (notebook repo baseline) - optional, async, minimal
+        # Skip GitHub evidence to reduce payload size - it's often too large
         github_evidence = None
-        try:
-            # Get project to find user_repo_url
-            project_response = (
-                self.supabase.table("projects")
-                .select("user_repo_url, github_access_token")
-                .eq("project_id", workspace.project_id)
-                .execute()
-            )
-
-            if project_response.data:
-                project = project_response.data[0]
-                user_repo_url = project.get("user_repo_url")
-
-                if user_repo_url:
-                    github_evidence = await self.github_collector.get_repo_baseline(
-                        user_repo_url, file_paths=changed_files[:5]
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to collect GitHub evidence: {e}")
+        # Temporarily disabled to avoid 413 Payload Too Large errors
+        # try:
+        #     project_response = (
+        #         self.supabase.table("projects")
+        #         .select("user_repo_url, github_access_token")
+        #         .eq("project_id", workspace.project_id)
+        #         .execute()
+        #     )
+        #     if project_response.data:
+        #         project = project_response.data[0]
+        #         user_repo_url = project.get("user_repo_url")
+        #         if user_repo_url:
+        #             github_evidence = await self.github_collector.get_repo_baseline(
+        #                 user_repo_url, file_paths=changed_files[:5]
+        #             )
+        # except Exception as e:
+        #     logger.warning(f"Failed to collect GitHub evidence: {e}")
 
         return {
             "git_diff": git_diff,
