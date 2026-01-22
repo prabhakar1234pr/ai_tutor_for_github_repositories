@@ -15,5 +15,27 @@ if [ -n "$GCP_SA_KEY" ]; then
     echo "Service account credentials written to /app/credentials/service-account.json"
 fi
 
-# Execute the main command
-exec "$@"
+# Use PORT from environment (Cloud Run sets this), default to 8080
+export PORT=${PORT:-8080}
+echo "Starting application on port $PORT"
+
+# Replace --port argument in command if present
+ARGS=()
+SKIP_NEXT=false
+for arg in "$@"; do
+    if [ "$SKIP_NEXT" = true ]; then
+        # Skip the port number after --port
+        SKIP_NEXT=false
+        continue
+    elif [ "$arg" = "--port" ]; then
+        # Replace --port with --port $PORT
+        ARGS+=("--port")
+        ARGS+=("$PORT")
+        SKIP_NEXT=true
+    else
+        ARGS+=("$arg")
+    fi
+done
+
+# Execute the command with updated port
+exec "${ARGS[@]}"

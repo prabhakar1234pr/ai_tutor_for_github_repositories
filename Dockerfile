@@ -37,9 +37,9 @@ ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8080
 
-# Health check
+# Health check (uses PORT env var, defaults to 8080)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/api/health || exit 1
+    CMD sh -c 'curl -f http://localhost:${PORT:-8080}/api/health || exit 1'
 
 # Use startup script to write credentials and run the application
 ENTRYPOINT ["/startup.sh"]
