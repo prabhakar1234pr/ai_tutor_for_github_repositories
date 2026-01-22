@@ -8,11 +8,81 @@ Also includes incremental concept generation for lazy loading.
 import asyncio
 import logging
 
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel
+from supabase import Client
+
 from app.agents.roadmap_agent import run_roadmap_agent
 from app.agents.state import ConceptStatus, MemoryLedger, RoadmapAgentState
 from app.core.supabase_client import get_supabase_client
+from app.utils.clerk_auth import verify_clerk_token
 
 logger = logging.getLogger(__name__)
+
+# Create router for roadmap generation endpoints
+router = APIRouter()
+
+
+class GenerateRoadmapRequest(BaseModel):
+    project_id: str
+    github_url: str
+    skill_level: str
+    target_days: int
+
+
+@router.post("/generate")
+async def generate_roadmap(
+    request: GenerateRoadmapRequest,
+    background_tasks: BackgroundTasks,
+    user_info: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_supabase_client),
+):
+    """
+    Trigger roadmap generation for a project.
+    This is a heavy LLM operation that runs in the background.
+    """
+    try:
+        # Verify project belongs to user
+        clerk_user_id = user_info["clerk_user_id"]
+        user_response = (
+            supabase.table("User").select("id").eq("clerk_user_id", clerk_user_id).execute()
+        )
+        if not user_response.data:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        user_id = user_response.data[0]["id"]
+
+        project_response = (
+            supabase.table("projects")
+            .select("project_id")
+            .eq("project_id", request.project_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not project_response.data:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        # Trigger roadmap generation in background
+        background_tasks.add_task(
+            run_roadmap_generation,
+            project_id=request.project_id,
+            github_url=request.github_url,
+            skill_level=request.skill_level,
+            target_days=request.target_days,
+        )
+
+        return {
+            "success": True,
+            "message": "Roadmap generation started",
+            "project_id": request.project_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error triggering roadmap generation: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to trigger roadmap generation: {e}"
+        ) from e
 
 
 async def run_roadmap_generation(
