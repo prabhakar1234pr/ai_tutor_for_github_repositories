@@ -73,12 +73,11 @@ jobs:
             --allow-unauthenticated
             --memory=1Gi
             --cpu=1
-            --timeout=300
             --max-instances=10
             --min-instances=0
             --service-account=${{ env.CLOUD_RUN_RUNTIME_SA }}
-            --no-cpu-throttling
           env_vars: |
+            APP_MODULE=app.main:app
             ENVIRONMENT=production
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
             GCP_LOCATION=${{ env.REGION }}
@@ -114,12 +113,11 @@ jobs:
             --no-allow-unauthenticated
             --memory=2Gi
             --cpu=2
-            --timeout=900
             --max-instances=5
             --min-instances=0
             --service-account=${{ env.CLOUD_RUN_RUNTIME_SA }}
-            --no-cpu-throttling
           env_vars: |
+            APP_MODULE=app.roadmap_service:app
             ENVIRONMENT=production
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
             GCP_LOCATION=${{ env.REGION }}
