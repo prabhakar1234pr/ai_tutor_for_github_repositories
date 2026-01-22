@@ -85,9 +85,7 @@ async def lifespan(_app: FastAPI):
 
     # GitHub Settings
     logging.info("🔧 GitHub Configuration:")
-    logging.info(
-        f"  GitHub Token: {'✓ Configured' if settings.github_access_token else '✗ Not set'}"
-    )
+    logging.info(f"  GitHub Token: {'✓ Configured' if settings.git_access_token else '✗ Not set'}")
 
     # Auth Settings
     logging.info("🔐 Authentication Configuration:")
