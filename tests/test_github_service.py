@@ -53,7 +53,7 @@ class TestGitHubService:
             mock_client.get = AsyncMock(side_effect=mock_get)
             mock_client_class.return_value = mock_client
 
-            with patch("app.config.settings.github_access_token", None):
+            with patch("app.config.settings.git_access_token", None):
                 files = await fetch_repository_files("https://github.com/user/test-repo")
 
         # Note: This test may need adjustment based on actual implementation

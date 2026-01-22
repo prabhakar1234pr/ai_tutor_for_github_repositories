@@ -164,7 +164,7 @@ async def verify_task(
             )
 
         # Use app's GitHub token from .env (not user's PAT)
-        github_token = settings.github_access_token
+        github_token = settings.git_access_token
 
         # Get base commit from task session (if exists)
         base_commit = None

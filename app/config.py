@@ -115,6 +115,9 @@ class Settings(BaseSettings):
 
     # GitHub API
     git_access_token: str | None = None  # Maps to GIT_ACCESS_TOKEN
+    git_client_id: str | None = None  # Maps to GIT_CLIENT_ID
+    git_client_secret: str | None = None  # Maps to GIT_CLIENT_SECRET
+    git_redirect_uri: str | None = None  # Maps to GIT_REDIRECT_URI
 
     # Redis (for rate limiting and caching)
     redis_url: str | None = None  # Maps to REDIS_URL (e.g., redis://localhost:6379/0)

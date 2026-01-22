@@ -173,8 +173,8 @@ async def fetch_repository_files(github_url: str) -> list[dict[str, str]]:
     logger.info(f"📂 Fetching repository: {owner}/{repo} from {github_url}")
 
     headers = {}
-    if settings.github_access_token:
-        headers["Authorization"] = f"token {settings.github_access_token}"
+    if settings.git_access_token:
+        headers["Authorization"] = f"token {settings.git_access_token}"
         logger.debug("🔑 Using GitHub access token for authentication")
     else:
         logger.warning("⚠️  No GitHub access token configured, using unauthenticated requests")
