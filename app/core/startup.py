@@ -31,6 +31,11 @@ async def shutdown_services():
     Cleanup services on application shutdown.
     Call this from FastAPI shutdown event.
     """
-    logger.info("🛑 Shutting down application services...")
-    # Add any cleanup logic here
-    logger.info("✅ Services shut down")
+    try:
+        logger.info("🛑 Shutting down application services...")
+        # Add any cleanup logic here
+        logger.info("✅ Services shut down")
+    except Exception as e:
+        # Ignore cancellation errors during shutdown (normal when stopping with Ctrl+C)
+        if "CancelledError" not in str(type(e).__name__):
+            logger.warning(f"⚠️  Error during shutdown: {e}")

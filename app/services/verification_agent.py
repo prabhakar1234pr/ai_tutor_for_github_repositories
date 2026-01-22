@@ -1,14 +1,14 @@
 """
 Verification Agent
-AI agent powered by Groq (Llama 3.1 70B) that autonomously uses GitHub API tools to verify tasks.
-Uses GROQ_API_KEY2 for higher token limits.
+AI agent powered by Gemini (Vertex AI) that autonomously uses GitHub API tools to verify tasks.
+Uses Gemini's function calling capabilities for intelligent tool use.
 """
 
 import json
 import logging
 from typing import Any
 
-# Using Groq for verification
+# Using Gemini for verification
 from app.services.github_tools import execute_github_tool, get_github_tools
 from app.utils.json_parser import parse_llm_json_response_async
 
@@ -67,14 +67,15 @@ Your task is to verify if code changes between two commits fulfill the given tas
 
 class VerificationAgent:
     """
-    AI agent that uses Groq (Llama 3.1 70B) with GitHub API tools to verify tasks.
-    The agent autonomously decides when and how to use GitHub API tools.
+    AI agent that uses Gemini (Vertex AI) with GitHub API tools to verify tasks.
+    The agent autonomously decides when and how to use GitHub API tools via Gemini's function calling.
+    Powered by Gemini's advanced reasoning capabilities for code verification.
     """
 
     def __init__(self):
-        from app.services.groq_service import get_groq_verification_service
+        from app.services.gemini_service import get_gemini_service
 
-        self.groq_service = get_groq_verification_service()
+        self.gemini_service = get_gemini_service()
         self.github_tools = get_github_tools()
         self.max_iterations = 5  # Maximum tool call iterations
 
@@ -105,8 +106,9 @@ class VerificationAgent:
             Verification result dict with passed, feedback, requirements_check, etc.
         """
         logger.info(
-            f"🤖 Starting verification agent for task: base={base_commit[:8]}, head={head_commit[:8]}"
+            f"🤖 Starting Gemini verification agent for task: base={base_commit[:8]}, head={head_commit[:8]}"
         )
+        logger.info("   ✨ Powered by Gemini (Vertex AI) with function calling")
 
         # Build initial user message
         user_message = f"""**Task Description:**
@@ -165,22 +167,27 @@ class VerificationAgent:
             {"role": "user", "content": user_message},
         ]
 
-        # Agent loop: handle tool calls
+        # Agent loop: handle tool calls with Gemini
         iteration = 0
         while iteration < self.max_iterations:
             iteration += 1
-            logger.info(f"🔄 Agent iteration {iteration}/{self.max_iterations}")
+            logger.info(f"🔄 Gemini Agent iteration {iteration}/{self.max_iterations}")
+            logger.debug("   🤖 Using Gemini with function calling (Vertex AI)")
 
-            # Call Groq with tools
+            # Call Gemini with tools
             try:
-                response = await self.groq_service.generate_with_tools_async(
+                logger.debug(
+                    f"   📤 Sending request to Gemini API with {len(self.github_tools)} tools..."
+                )
+                response = await self.gemini_service.generate_with_tools_async(
                     messages=messages,
                     tools=self.github_tools,
                     temperature=0.0,  # Strict mode
                     max_tokens=4000,
                 )
+                logger.debug("   ✅ Gemini API response received")
             except Exception as e:
-                logger.error(f"Error calling Groq API: {e}", exc_info=True)
+                logger.error(f"❌ Error calling Gemini API: {e}", exc_info=True)
                 return self._create_error_response(str(e))
 
             # Check if agent wants to call tools
@@ -204,10 +211,10 @@ class VerificationAgent:
 
             # If no tool calls, agent is done - parse final response
             if not tool_calls or finish_reason == "stop":
-                logger.info("✅ Agent finished (no more tool calls)")
+                logger.info("✅ Gemini Agent finished (no more tool calls)")
                 if agent_content:
                     logger.info(
-                        f"📝 Final agent response: {agent_content[:300]}{'...' if len(agent_content) > 300 else ''}"
+                        f"📝 Final Gemini agent response: {agent_content[:300]}{'...' if len(agent_content) > 300 else ''}"
                     )
                 return await self._parse_final_response(messages, response)
 
@@ -358,7 +365,7 @@ class VerificationAgent:
 
         Args:
             messages: Full conversation history
-            last_response: Last Groq API response
+            last_response: Last Gemini API response
 
         Returns:
             Parsed verification result dict
@@ -372,13 +379,15 @@ class VerificationAgent:
                     content = msg["content"]
                     break
 
-        logger.info(f"📄 Parsing final agent response ({len(content) if content else 0} chars)")
+        logger.info(
+            f"📄 Parsing final Gemini agent response ({len(content) if content else 0} chars)"
+        )
 
         if not content:
-            logger.error("No content in agent response")
-            return self._create_error_response("Agent did not provide verification result")
+            logger.error("❌ No content in Gemini agent response")
+            return self._create_error_response("Gemini agent did not provide verification result")
 
-        logger.debug(f"Parsing agent response: {content[:200]}...")
+        logger.debug(f"   🔍 Parsing Gemini agent response: {content[:200]}...")
 
         # Try to parse JSON from content
         try:
@@ -402,19 +411,22 @@ class VerificationAgent:
 
         # Log parsed result
         passed = verification_result.get("passed", False)
-        logger.info(f"🎯 Agent decision: {'✅ PASSED' if passed else '❌ FAILED'}")
+        logger.info(f"🎯 Gemini Agent decision: {'✅ PASSED' if passed else '❌ FAILED'}")
         if verification_result.get("overall_feedback"):
-            logger.info(f"💬 Feedback: {verification_result.get('overall_feedback', '')[:200]}...")
+            logger.info(
+                f"💬 Gemini Agent feedback: {verification_result.get('overall_feedback', '')[:200]}..."
+            )
 
         # Validate and normalize result
         normalized = self._normalize_verification_result(verification_result)
 
         # Log normalized result summary
-        logger.info("📊 Verification summary:")
-        logger.info(f"   Status: {'✅ PASSED' if normalized.get('passed') else '❌ FAILED'}")
-        logger.info(f"   Code Quality: {normalized.get('code_quality', 'N/A')}")
-        logger.info(f"   Test Status: {normalized.get('test_status', 'N/A')}")
-        logger.info(f"   Pattern Match: {normalized.get('pattern_match_status', 'N/A')}")
+        logger.info("📊 Gemini Verification Summary:")
+        logger.info(f"   ✅ Status: {'PASSED' if normalized.get('passed') else 'FAILED'}")
+        logger.info(f"   📈 Code Quality: {normalized.get('code_quality', 'N/A')}")
+        logger.info(f"   🧪 Test Status: {normalized.get('test_status', 'N/A')}")
+        logger.info(f"   🔍 Pattern Match: {normalized.get('pattern_match_status', 'N/A')}")
+        logger.info("   ✨ Verification powered by Gemini (Vertex AI)")
 
         return normalized
 
@@ -450,7 +462,9 @@ class VerificationAgent:
                 }
             }
 
-        logger.info(f"✅ Verification complete: {'PASSED' if normalized['passed'] else 'FAILED'}")
+        logger.info(
+            f"✅ Gemini verification complete: {'PASSED' if normalized['passed'] else 'FAILED'}"
+        )
 
         return normalized
 

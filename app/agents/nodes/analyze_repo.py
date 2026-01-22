@@ -2,15 +2,15 @@
 Analyze repository using RAG to understand its structure and technologies.
 This node uses Qdrant embeddings to retrieve relevant code context.
 
-Uses two-stage analysis to handle large codebases and avoid payload size limits:
-- Stage 1: High-level analysis with top 6 chunks (smaller payload)
-- Stage 2: Detailed analysis with preliminary summary + remaining chunks
+Uses two-stage Gemini analysis to handle large codebases and avoid payload size limits:
+- Stage 1: High-level analysis with Gemini (top 6 chunks, smaller payload)
+- Stage 2: Detailed analysis with Gemini (preliminary summary + remaining chunks)
 
 Optimized with adaptive token budgeting to prevent token limit errors:
 - Retrieves more chunks initially (top_k=15)
 - Truncates each chunk to MAX_CHUNK_TOKENS (500)
 - Selects chunks within ANALYZE_REPO_TOKEN_BUDGET (6000)
-- Splits into two batches for two-stage LLM calls
+- Splits into two batches for two-stage Gemini API calls
 """
 
 import logging
@@ -19,7 +19,7 @@ from app.agents.prompts import REPO_ANALYSIS_STAGE1_PROMPT, REPO_ANALYSIS_STAGE2
 from app.agents.state import RepoAnalysis, RoadmapAgentState
 from app.core.supabase_client import get_supabase_client
 from app.services.embedding_service import get_embedding_service
-from app.services.groq_service import get_groq_service
+from app.services.gemini_service import get_gemini_service
 from app.services.qdrant_service import get_qdrant_service
 from app.utils.json_parser import parse_llm_json_response_async
 from app.utils.token_budgeting import (
@@ -41,7 +41,7 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
 
     This node:
     1. Uses RAG to retrieve relevant code chunks from the repository
-    2. Calls Groq LLM to analyze the repository structure
+    2. Calls Gemini LLM to analyze the repository structure
     3. Parses the JSON response into RepoAnalysis
     4. Updates state with the analysis
 
@@ -166,10 +166,11 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
         first_stage_chunks = []
         second_stage_chunks = []
 
-    # Step 2: Two-stage LLM analysis
-    logger.info("🤖 Starting two-stage repository analysis with LLM...")
+    # Step 2: Two-stage LLM analysis with Gemini
+    logger.info("🤖 Starting two-stage repository analysis with Gemini...")
+    logger.info("   📋 Using Gemini for codebase analysis (Vertex AI)")
 
-    groq_service = get_groq_service()
+    gemini_service = get_gemini_service()
     system_prompt = (
         "You are an expert software engineer analyzing codebases. "
         "CRITICAL: Return ONLY valid JSON. Do NOT use markdown code blocks. "
@@ -178,7 +179,7 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
 
     try:
         # ===== STAGE 1: High-level analysis with first batch =====
-        logger.info("📊 Stage 1: High-level analysis with top chunks...")
+        logger.info("📊 Stage 1: High-level analysis with Gemini (top chunks)...")
 
         if first_stage_chunks:
             stage1_context = build_context_from_chunks(first_stage_chunks)
@@ -192,12 +193,14 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
             code_context=stage1_context,
         )
 
-        stage1_response = await groq_service.generate_response_async(
+        logger.debug("   📤 Sending Stage 1 request to Gemini API...")
+        stage1_response = await gemini_service.generate_response_async(
             user_query=stage1_prompt,
             system_prompt=system_prompt,
             context="",
         )
 
+        logger.info(f"   ✅ Stage 1 Gemini response received ({len(stage1_response)} chars)")
         logger.debug(f"   Stage 1 response length: {len(stage1_response)} chars")
 
         # Parse Stage 1 response
@@ -211,7 +214,9 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
             raise ValueError(f"Invalid JSON in Stage 1: {parse_error}") from parse_error
 
         # ===== STAGE 2: Detailed analysis with summary + remaining chunks =====
-        logger.info("📊 Stage 2: Detailed analysis with preliminary summary + remaining chunks...")
+        logger.info(
+            "📊 Stage 2: Detailed analysis with Gemini (preliminary summary + remaining chunks)..."
+        )
 
         if second_stage_chunks:
             stage2_context = build_context_from_chunks(second_stage_chunks)
@@ -245,12 +250,14 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
 
         # Only run Stage 2 if we have additional chunks
         if second_stage_chunks:
-            stage2_response = await groq_service.generate_response_async(
+            logger.debug("   📤 Sending Stage 2 request to Gemini API...")
+            stage2_response = await gemini_service.generate_response_async(
                 user_query=stage2_prompt,
                 system_prompt=system_prompt,
                 context="",
             )
 
+            logger.info(f"   ✅ Stage 2 Gemini response received ({len(stage2_response)} chars)")
             logger.debug(f"   Stage 2 response length: {len(stage2_response)} chars")
 
             # Parse Stage 2 response
@@ -278,11 +285,12 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
             "difficulty": final_analysis.get("difficulty", "intermediate"),
         }
 
-        logger.info("✅ Repository analysis complete (two-stage):")
-        logger.info(f"   Primary Language: {repo_analysis['primary_language']}")
-        logger.info(f"   Frameworks: {', '.join(repo_analysis['frameworks'])}")
-        logger.info(f"   Architecture: {', '.join(repo_analysis['architecture_patterns'])}")
-        logger.info(f"   Difficulty: {repo_analysis['difficulty']}")
+        logger.info("✅ Repository analysis complete (Gemini two-stage analysis):")
+        logger.info(f"   📊 Primary Language: {repo_analysis['primary_language']}")
+        logger.info(f"   🛠️  Frameworks: {', '.join(repo_analysis['frameworks'])}")
+        logger.info(f"   🏗️  Architecture: {', '.join(repo_analysis['architecture_patterns'])}")
+        logger.info(f"   📈 Difficulty: {repo_analysis['difficulty']}")
+        logger.info("   ✨ Analysis powered by Gemini (Vertex AI)")
 
         # Update state
         state["repo_analysis"] = repo_analysis

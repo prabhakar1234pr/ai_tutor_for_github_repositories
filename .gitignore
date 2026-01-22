@@ -9,3 +9,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# GCP Service Account credentials (sensitive)
+credentials/
+*.json
+!package*.json
+!tsconfig*.json

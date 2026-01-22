@@ -1,6 +1,7 @@
 """
-Task generation node.
+Task generation node using Gemini (Vertex AI).
 Generates tasks with test files using notebook repo context.
+Uses Gemini API for intelligent task and test file generation.
 """
 
 import logging
@@ -15,7 +16,7 @@ from app.agents.utils.memory_context import (
 from app.agents.utils.repo_context import build_notebook_repo_context_for_task_generation
 from app.agents.utils.retry_wrapper import generate_with_retry
 from app.core.supabase_client import get_supabase_client
-from app.services.groq_service import get_groq_service
+from app.services.gemini_service import get_gemini_service
 from app.utils.json_parser import parse_llm_json_response_async
 from app.utils.type_validator import validate_and_normalize_tasks
 
@@ -213,7 +214,10 @@ async def generate_tasks_with_tests(state: RoadmapAgentState) -> RoadmapAgentSta
     concept_metadata = concepts_dict.get(concept_id, {})
     concept_title = concept_metadata.get("title", concept_id)
 
-    logger.info(f"🤖 Generating tasks with tests for concept: {concept_title} ({concept_id})")
+    logger.info(
+        f"🤖 Generating tasks with tests using Gemini for concept: {concept_title} ({concept_id})"
+    )
+    logger.info("   ✨ Using Gemini (Vertex AI) for task and test file generation")
 
     # Get project info to access user_repo_url (notebook repo) and github_url (textbook repo fallback)
     supabase = get_supabase_client()
@@ -350,12 +354,12 @@ async def generate_tasks_with_tests(state: RoadmapAgentState) -> RoadmapAgentSta
         if database_concept_id and tasks_with_tests:
             await _save_tasks_to_db(database_concept_id, tasks_with_tests)
             logger.info(
-                f"✅ Generated and saved {len(tasks_with_tests)} tasks for concept: {concept_title}"
+                f"✅ Generated and saved {len(tasks_with_tests)} tasks with Gemini for concept: {concept_title}"
             )
         else:
             logger.warning(f"No database concept_id found for {concept_id}, tasks not saved")
     else:
-        logger.error(f"❌ Failed to generate tasks for concept: {concept_title}")
+        logger.error(f"❌ Failed to generate tasks with Gemini for concept: {concept_title}")
 
     return state
 
@@ -387,7 +391,7 @@ async def _llm_generate_tasks_with_tests(
     Raises:
         JSONParseError: If LLM response cannot be parsed
     """
-    groq_service = get_groq_service()
+    gemini_service = get_gemini_service()
 
     concept_title = concept_metadata.get("title", concept_id)
     concept_objective = concept_metadata.get("objective", "")
@@ -404,18 +408,21 @@ async def _llm_generate_tasks_with_tests(
         memory_context=memory_context_str or "No previous learning context.",
     )
 
-    logger.debug(f"   Calling LLM for '{concept_title}' (tasks + tests)...")
+    logger.info(f"   📤 Sending task generation request to Gemini for '{concept_title}'...")
+    logger.debug("   🎯 Generating tasks + tests with Gemini (Vertex AI)...")
 
-    response = await groq_service.generate_response_async(
+    response = await gemini_service.generate_response_async(
         user_query=prompt,
         system_prompt="You are an expert technical educator. Return ONLY valid JSON object, no markdown or extra text.",
         context="",
     )
 
+    logger.info(f"   ✅ Gemini response received for '{concept_title}' ({len(response)} chars)")
+
     # Parse the response
     result_data = await parse_llm_json_response_async(response, expected_type="object")
 
-    logger.debug(f"   ✅ LLM response parsed for '{concept_title}'")
+    logger.debug(f"   ✅ Gemini response parsed for '{concept_title}'")
 
     return result_data
 

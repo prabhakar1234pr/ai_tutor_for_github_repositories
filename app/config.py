@@ -102,6 +102,19 @@ class Settings(BaseSettings):
     )
     groq_sanitizer_enabled: bool = True  # Enable/disable sanitizer
 
+    # LLM API Keys - Gemini (Google Cloud)
+    gemini_api_key: str | None = None  # Maps to GEMINI_API_KEY (direct API key method)
+    google_application_credentials: str | None = (
+        None  # Maps to GOOGLE_APPLICATION_CREDENTIALS (service account JSON path)
+    )
+    gcp_project_id: str | None = None  # Maps to GCP_PROJECT_ID (required for service account)
+    gcp_location: str = (
+        "global"  # Maps to GCP_LOCATION (default: global - required for Gemini models)
+    )
+    gemini_model: str = (
+        "gemini-2.0-flash-exp"  # Maps to GEMINI_MODEL (Vertex AI: gemini-2.0-flash-exp, gemini-2.5-flash, gemini-2.5-pro)
+    )
+
     # GitHub API
     github_access_token: str | None = None  # Maps to GITHUB_ACCESS_TOKEN
 

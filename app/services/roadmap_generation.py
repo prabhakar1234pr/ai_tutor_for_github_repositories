@@ -33,10 +33,16 @@ async def run_roadmap_generation(
         skill_level: beginner/intermediate/advanced
         target_days: Number of days for the roadmap
     """
-    logger.info(f"🚀 Starting roadmap generation for project_id={project_id}")
-    logger.info(f"   GitHub URL: {github_url}")
-    logger.info(f"   Skill Level: {skill_level}")
-    logger.info(f"   Target Days: {target_days}")
+    logger.info("=" * 70)
+    logger.info("🚀 Starting Roadmap Generation Pipeline")
+    logger.info("=" * 70)
+    logger.info(f"   📦 Project ID: {project_id}")
+    logger.info(f"   🔗 GitHub URL: {github_url}")
+    logger.info(f"   📊 Skill Level: {skill_level}")
+    logger.info(f"   📅 Target Days: {target_days}")
+    logger.info("   ✨ Powered by Gemini (Vertex AI) for all LLM operations")
+    logger.info("   🔄 Pipeline: Analyze → Plan → Generate Content → Generate Tasks")
+    logger.info("=" * 70)
 
     try:
         # Run the roadmap agent
@@ -50,20 +56,27 @@ async def run_roadmap_generation(
         if result["success"]:
             # Check if it was paused vs truly completed
             if result.get("is_complete", False):
-                logger.info(
-                    f"✅ Roadmap generation completed successfully for project_id={project_id}"
-                )
+                logger.info("=" * 70)
+                logger.info("✅ Gemini-Powered Roadmap Generation Completed Successfully")
+                logger.info(f"   📦 Project ID: {project_id}")
+                logger.info("   ✨ All operations completed using Gemini (Vertex AI)")
+                logger.info("=" * 70)
             elif result.get("is_paused", False):
                 logger.info(
                     f"⏸️  Roadmap generation paused (window full) for project_id={project_id}. "
                     f"Waiting for user progress to continue."
                 )
             else:
-                logger.info(f"✅ Roadmap generation completed for project_id={project_id}")
+                logger.info("=" * 70)
+                logger.info("✅ Gemini-Powered Roadmap Generation Completed")
+                logger.info(f"   📦 Project ID: {project_id}")
+                logger.info("=" * 70)
         else:
-            logger.error(
-                f"❌ Roadmap generation failed for project_id={project_id}: {result.get('error')}"
-            )
+            logger.error("=" * 70)
+            logger.error("❌ Gemini-Powered Roadmap Generation Failed")
+            logger.error(f"   📦 Project ID: {project_id}")
+            logger.error(f"   ⚠️  Error: {result.get('error')}")
+            logger.error("=" * 70)
             # Optionally update project status to indicate roadmap generation failed
             # But we don't want to mark the whole project as failed since embeddings succeeded
 

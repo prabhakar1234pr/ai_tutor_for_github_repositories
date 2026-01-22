@@ -1,7 +1,9 @@
 """
 Plan curriculum by generating complete structure upfront.
-Generates ALL days and ALL concepts in a single LLM call.
+Generates ALL days and ALL concepts in a single Gemini API call.
 This ensures consistency across the entire roadmap.
+
+Uses Gemini (Vertex AI) for curriculum planning.
 
 Output structure:
 {
@@ -22,7 +24,7 @@ from app.agents.state import (
     DayTheme,
     RoadmapAgentState,
 )
-from app.services.groq_service import get_groq_service
+from app.services.gemini_service import get_gemini_service
 from app.utils.json_parser import parse_llm_json_response_async
 
 logger = logging.getLogger(__name__)
@@ -33,7 +35,7 @@ async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentStat
     Generate complete curriculum with all days and concepts upfront.
 
     This node:
-    1. Calls Groq LLM to generate complete curriculum structure
+    1. Calls Gemini LLM to generate complete curriculum structure
     2. Parses JSON response into Curriculum TypedDict
     3. Validates concepts and dependencies
     4. Initializes concept_status_map for all concepts
@@ -77,8 +79,9 @@ async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentStat
         last_day_number=last_day_number,
     )
 
-    # Call Groq LLM
-    groq_service = get_groq_service()
+    # Call Gemini LLM for curriculum planning
+    logger.info("🤖 Initializing Gemini for curriculum planning...")
+    gemini_service = get_gemini_service()
     system_prompt = (
         "You are an expert curriculum designer. "
         "Return ONLY valid JSON object with days, concepts, and dependency_graph. "
@@ -86,14 +89,18 @@ async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentStat
     )
 
     try:
-        logger.info("🤖 Generating complete curriculum with LLM...")
+        logger.info("📚 Generating complete curriculum with Gemini (Vertex AI)...")
+        logger.info(f"   📋 Target: {target_days} days, Skill Level: {skill_level}")
+        logger.debug("   📤 Sending curriculum planning request to Gemini...")
+
         # Use async version with rate limiting
-        llm_response = await groq_service.generate_response_async(
+        llm_response = await gemini_service.generate_response_async(
             user_query=prompt,
             system_prompt=system_prompt,
             context="",  # Context already in prompt
         )
 
+        logger.info(f"   ✅ Gemini curriculum response received ({len(llm_response)} chars)")
         logger.debug(f"   LLM response length: {len(llm_response)} chars")
 
         # Parse JSON response using async parser (supports sanitizer)
@@ -113,9 +120,10 @@ async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentStat
         total_concepts = len(curriculum.get("concepts", {}))
         total_days = len(curriculum.get("days", []))
 
-        logger.info("✅ Curriculum planned:")
-        logger.info(f"   Days: {total_days}")
-        logger.info(f"   Concepts: {total_concepts}")
+        logger.info("✅ Curriculum planned successfully with Gemini:")
+        logger.info(f"   📅 Days: {total_days}")
+        logger.info(f"   📚 Concepts: {total_concepts}")
+        logger.info("   ✨ Powered by Gemini (Vertex AI)")
 
         # Log first few days
         for day in curriculum.get("days", [])[:3]:

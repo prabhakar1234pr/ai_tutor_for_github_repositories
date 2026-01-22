@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from supabase import Client
 
 from app.core.supabase_client import get_supabase_client
+from app.services.gemini_service import get_gemini_service
 from app.services.rag_pipeline import generate_rag_response
 from app.utils.clerk_auth import verify_clerk_token
 
@@ -178,3 +179,55 @@ async def chat(
     except Exception as e:
         logger.error(f"Error in chat endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat request failed: {str(e)}") from e
+
+
+class TestChatRequest(BaseModel):
+    message: str = Field(..., description="User's message", min_length=1, max_length=2000)
+    conversation_history: list[ChatMessage] | None = Field(
+        default=[], description="Previous conversation messages for context"
+    )
+
+
+class TestChatResponse(BaseModel):
+    response: str = Field(..., description="AI assistant's response")
+    model_used: str = Field(..., description="Model used for generation")
+
+
+@router.post("/test", response_model=TestChatResponse)
+async def test_chat(chat_request: TestChatRequest):
+    """
+    Simple test endpoint for Gemini chatbot (no authentication required).
+    Useful for testing Gemini API integration directly.
+    """
+    try:
+        logger.info(f"🧪 Test chat request: {chat_request.message[:100]}...")
+
+        # Get Gemini service
+        gemini_service = get_gemini_service()
+
+        # Build conversation history string if available
+        context = ""
+        if chat_request.conversation_history:
+            history_text = "\n".join(
+                f"{msg.role}: {msg.content}" for msg in chat_request.conversation_history[-5:]
+            )
+            context = f"Previous conversation:\n{history_text}\n\n"
+
+        # Generate response using Gemini
+        response = await gemini_service.generate_response_async(
+            user_query=chat_request.message,
+            system_prompt="You are a helpful AI assistant. Be concise and friendly.",
+            context=context,
+            temperature=0.7,
+        )
+
+        logger.info("✅ Test chat response generated successfully")
+
+        return TestChatResponse(
+            response=response,
+            model_used=gemini_service.model,
+        )
+
+    except Exception as e:
+        logger.error(f"❌ Error in test chat endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate response: {str(e)}") from e

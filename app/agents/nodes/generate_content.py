@@ -1,17 +1,17 @@
 """
-Content generation nodes using LLM.
+Content generation nodes using Gemini (Vertex AI).
 Generates concept content with lazy loading and retry logic.
 
 Optimized for the new curriculum structure:
-- generate_concept_content: Generates content and summary in a SINGLE LLM call
+- generate_concept_content: Generates content and summary in a SINGLE Gemini API call
 - Tasks are generated separately in a dedicated node with test files
-- Uses retry wrapper for resilient LLM calls
+- Uses retry wrapper for resilient Gemini API calls
 - Updates memory_ledger with skills and files
 - Derives generation queue from curriculum (not stored in state)
 
-LLM Call Optimization:
-- Content generation: 1 call per concept (content + summary)
-- Tasks are generated separately with test files in generate_tasks_with_tests node
+Gemini API Call Optimization:
+- Content generation: 1 call per concept (content + summary) using Gemini
+- Tasks are generated separately with test files in generate_tasks_with_tests node using Gemini
 """
 
 import logging
@@ -31,7 +31,7 @@ from app.agents.utils.concept_order import (
 )
 from app.agents.utils.retry_wrapper import JSONParseError, generate_with_retry
 from app.core.supabase_client import get_supabase_client
-from app.services.groq_service import get_groq_service
+from app.services.gemini_service import get_gemini_service
 
 # Note: Day 0 is handled separately via API endpoint, not imported here
 from app.utils.json_parser import parse_llm_json_response_async
@@ -108,7 +108,8 @@ async def generate_concept_content(state: RoadmapAgentState) -> RoadmapAgentStat
     concept_metadata = concepts_dict.get(concept_id, {})
     concept_title = concept_metadata.get("title", concept_id)
 
-    logger.info(f"🤖 Generating content for concept: {concept_title} ({concept_id})")
+    logger.info(f"🤖 Generating content with Gemini for concept: {concept_title} ({concept_id})")
+    logger.info("   ✨ Using Gemini (Vertex AI) for content generation")
 
     # Track the concept that was just generated (for mark_concept_complete)
     # This is different from user_current_concept_id which represents user's position
@@ -180,9 +181,9 @@ async def generate_concept_content(state: RoadmapAgentState) -> RoadmapAgentStat
             validated_result=validated_result,
         )
 
-        logger.info(f"✅ Generated content for concept: {concept_title}")
+        logger.info(f"✅ Generated content with Gemini for concept: {concept_title}")
     else:
-        logger.error(f"❌ Failed to generate content for concept: {concept_title}")
+        logger.error(f"❌ Failed to generate content with Gemini for concept: {concept_title}")
 
     return state
 
@@ -221,7 +222,7 @@ async def _llm_generate_concept_bundle(
     Raises:
         JSONParseError: If LLM response cannot be parsed
     """
-    groq_service = get_groq_service()
+    gemini_service = get_gemini_service()
 
     concept_title = concept_metadata.get("title", concept_id)
     concept_objective = concept_metadata.get("objective", "")
@@ -239,17 +240,21 @@ async def _llm_generate_concept_bundle(
         memory_context=memory_context_str,
     )
 
-    logger.debug(f"   Calling LLM for '{concept_title}' (content + summary)...")
-    response = await groq_service.generate_response_async(
+    logger.info(f"   📤 Sending content generation request to Gemini for '{concept_title}'...")
+    logger.debug("   📝 Generating content + summary with Gemini (Vertex AI)...")
+
+    response = await gemini_service.generate_response_async(
         user_query=combined_prompt,
         system_prompt="You are an expert technical educator. Return ONLY valid JSON object, no markdown or extra text.",
         context="",
     )
 
+    logger.info(f"   ✅ Gemini response received for '{concept_title}' ({len(response)} chars)")
+
     # Parse the combined response
     result_data = await parse_llm_json_response_async(response, expected_type="object")
 
-    logger.debug(f"   ✅ LLM response parsed for '{concept_title}'")
+    logger.debug(f"   ✅ Gemini response parsed for '{concept_title}'")
 
     return result_data
 
@@ -582,14 +587,14 @@ async def generate_concepts_for_day(state: RoadmapAgentState) -> RoadmapAgentSta
         memory_context_section=memory_context_section,
     )
 
-    groq_service = get_groq_service()
+    gemini_service = get_gemini_service()
     system_prompt = (
         "You are an expert curriculum designer. "
         "Return ONLY valid JSON array, no markdown, no extra text."
     )
 
     try:
-        llm_response = await groq_service.generate_response_async(
+        llm_response = await gemini_service.generate_response_async(
             user_query=prompt,
             system_prompt=system_prompt,
             context="",
@@ -642,7 +647,7 @@ async def generate_content_and_tasks(state: RoadmapAgentState) -> RoadmapAgentSt
 
     logger.info(f"🤖 Generating content and tasks for: {concept['title']}")
 
-    groq_service = get_groq_service()
+    gemini_service = get_gemini_service()
 
     try:
         # Generate content
@@ -654,7 +659,7 @@ async def generate_content_and_tasks(state: RoadmapAgentState) -> RoadmapAgentSt
         )
 
         logger.debug("   Calling LLM for content...")
-        content_response = await groq_service.generate_response_async(
+        content_response = await gemini_service.generate_response_async(
             user_query=content_prompt,
             system_prompt="You are an expert educator. Return ONLY valid JSON object, no markdown.",
             context="",

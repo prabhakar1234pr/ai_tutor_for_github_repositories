@@ -1,16 +1,16 @@
 """
-LangGraph agent for generating project roadmaps.
+LangGraph agent for generating project roadmaps using Gemini (Vertex AI).
 This agent creates a structured learning curriculum based on a GitHub repository.
 
-Optimized workflow (v2):
+Optimized workflow (v2) - Powered by Gemini:
 1. Fetch project context from database
-2. Analyze repository using RAG (with token budgeting)
-3. Plan curriculum (generate ALL days + concepts upfront)
+2. Analyze repository using RAG + Gemini (with token budgeting)
+3. Plan curriculum with Gemini (generate ALL days + concepts upfront)
 4. Insert all days to database
 5. Save all concepts to database (with status='empty')
-6. Loop: Generate concept content with lazy loading
+6. Loop: Generate concept content with Gemini (lazy loading)
    a. Build memory context from state ledger
-   b. Generate content + tasks with retry
+   b. Generate content + tasks with Gemini (retry logic)
    c. Generate inline summary
    d. Mark concept complete
 7. End when all concepts generated
@@ -245,7 +245,8 @@ def build_roadmap_graph() -> StateGraph:
 
     # Compile the graph
     graph = workflow.compile()
-    logger.info("✅ Roadmap generation graph built successfully (v2)")
+    logger.info("✅ Gemini-powered roadmap generation graph built successfully (v2)")
+    logger.info("   📊 Graph ready with Gemini integration")
 
     return graph
 
@@ -292,10 +293,12 @@ async def run_roadmap_agent(
             - project_id: str
             - error: Optional[str]
     """
-    logger.info(f"🚀 Starting roadmap generation agent for project_id={project_id}")
-    logger.info(f"   GitHub URL: {github_url}")
-    logger.info(f"   Skill Level: {skill_level}")
-    logger.info(f"   Target Days: {target_days}")
+    logger.info("🤖 Starting Gemini-Powered Roadmap Generation Agent")
+    logger.info(f"   📦 Project ID: {project_id}")
+    logger.info(f"   🔗 GitHub URL: {github_url}")
+    logger.info(f"   📊 Skill Level: {skill_level}")
+    logger.info(f"   📅 Target Days: {target_days}")
+    logger.info("   ✨ All LLM operations powered by Gemini (Vertex AI)")
     start_time = time.time()
 
     try:

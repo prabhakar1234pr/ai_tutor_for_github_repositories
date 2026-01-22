@@ -65,7 +65,22 @@ async def lifespan(_app: FastAPI):
         )
         logging.info(f"  Azure Timeout: {settings.azure_openai_timeout}s")
     else:
-        logging.info(f"  Groq API: {'✓ Configured' if settings.groq_api_key else '✗ Not set'}")
+        logging.info("  🌟 Primary LLM: Gemini (Vertex AI)")
+        logging.info(
+            f"  Gemini Model: {settings.gemini_model if hasattr(settings, 'gemini_model') else 'gemini-2.0-flash-exp'}"
+        )
+        logging.info(
+            f"  Gemini Auth: {'✓ Service Account (Vertex AI)' if settings.google_application_credentials else '✗ Not configured'}"
+        )
+        logging.info(
+            f"  GCP Project: {settings.gcp_project_id if hasattr(settings, 'gcp_project_id') else '✗ Not set'}"
+        )
+        logging.info(
+            f"  GCP Location: {settings.gcp_location if hasattr(settings, 'gcp_location') else 'global'}"
+        )
+        logging.info(
+            f"  Groq API (fallback/sanitizer): {'✓ Configured' if settings.groq_api_key else '✗ Not set'}"
+        )
         logging.info(f"  Groq Model: {settings.groq_model}")
 
     # GitHub Settings
@@ -95,13 +110,20 @@ async def lifespan(_app: FastAPI):
 
     yield  # App runs here
 
-    # Shutdown services
-    await shutdown_services()
-
     # Shutdown: Code that runs when the app shuts down
-    logging.info("=" * 60)
-    logging.info("🛑 App is shutting down...")
-    logging.info("=" * 60)
+    try:
+        logging.info("=" * 60)
+        logging.info("🛑 App is shutting down...")
+        logging.info("=" * 60)
+
+        # Shutdown services
+        await shutdown_services()
+    except Exception as e:
+        # Ignore cancellation errors during shutdown (normal when stopping with Ctrl+C)
+        if "CancelledError" not in str(type(e).__name__) and "KeyboardInterrupt" not in str(
+            type(e).__name__
+        ):
+            logging.error(f"Error during shutdown: {e}", exc_info=True)
 
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
