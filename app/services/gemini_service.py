@@ -115,6 +115,38 @@ class GeminiService:
                 logger.warning(f"⚠️ Service account file not found: {creds_path}")
                 logger.warning("   Falling back to API key method if available")
 
+        # Fallback: Use Application Default Credentials (ADC) on GCP (Cloud Run / GCE)
+        # This works when the Cloud Run service is configured with a runtime service account
+        # that has Vertex AI permissions (no JSON file needed).
+        if not self.use_service_account:
+            try:
+                import google.auth
+
+                creds, adc_project_id = google.auth.default()
+                if creds:
+                    self.use_service_account = True
+                    self.project_id = settings.gcp_project_id or adc_project_id
+                    self.location = (
+                        settings.gcp_location if hasattr(settings, "gcp_location") else "global"
+                    )
+
+                    if not self.project_id:
+                        raise ValueError(
+                            "GCP_PROJECT_ID is required when using Application Default Credentials. "
+                            "Set it as an environment variable (GCP_PROJECT_ID)."
+                        )
+
+                    logger.info(
+                        "✅ Using Gemini with Application Default Credentials (GCP runtime)"
+                    )
+                    logger.debug(f"   Project ID: {self.project_id}")
+                    logger.debug(f"   Location: {self.location}")
+            except Exception as e:
+                logger.info(
+                    f"ℹ️ Application Default Credentials not available ({type(e).__name__}). "
+                    "Falling back to API key method if available."
+                )
+
         # Fallback to API key method
         if not self.use_service_account:
             if not settings.gemini_api_key:

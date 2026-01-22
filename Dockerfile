@@ -23,8 +23,12 @@ RUN uv pip install --system -r pyproject.toml
 # Copy application code
 COPY app/ ./app/
 
-# Copy credentials (will be overridden by secrets in production)
-COPY credentials/ ./credentials/
+# Create credentials directory (will be populated from environment variables in production)
+RUN mkdir -p ./credentials
+
+# Copy startup script
+COPY scripts/startup.sh /startup.sh
+RUN chmod +x /startup.sh
 
 # Set environment variables
 ENV PORT=8080
@@ -37,5 +41,6 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/api/health || exit 1
 
-# Run the application
+# Use startup script to write credentials and run the application
+ENTRYPOINT ["/startup.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
