@@ -28,6 +28,10 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+        # NOTE: Service account must have "Artifact Registry Writer" role
+        # Grant with: gcloud projects add-iam-policy-binding gitguide-backend \
+        #   --member="serviceAccount:SERVICE_ACCOUNT_EMAIL" \
+        #   --role="roles/artifactregistry.writer"
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -108,3 +112,26 @@ jobs:
           gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='value(status.url)'
           echo "Roadmap URL:"
           gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='value(status.url)'
+
+  # ============================================
+  # Deploy to Workspace VM
+  # ============================================
+  deploy-workspace-vm:
+    name: Deploy to Workspace VM
+    runs-on: ubuntu-latest
+    needs: deploy-cloud-run
+
+    steps:
+      - name: Deploy to Workspace VM via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            cd /opt/gitguide-backend
+            git pull origin main
+            source .venv/bin/activate
+            uv pip install -r pyproject.toml
+            sudo systemctl restart gitguide-workspaces
+            echo "Deployment complete!"
