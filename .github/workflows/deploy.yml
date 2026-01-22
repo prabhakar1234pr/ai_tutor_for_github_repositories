@@ -67,6 +67,7 @@ jobs:
           service: gitguide-api
           region: ${{ env.REGION }}
           image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/api:${{ github.sha }}
+          timeout: 600
           flags: |
             --allow-unauthenticated
             --memory=1Gi
@@ -96,6 +97,7 @@ jobs:
           service: gitguide-roadmap
           region: ${{ env.REGION }}
           image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/roadmap:${{ github.sha }}
+          timeout: 600
           flags: |
             --no-allow-unauthenticated
             --memory=2Gi
@@ -115,6 +117,14 @@ jobs:
             QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }}
             CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
+
+      - name: Verify Deployments
+        run: |
+          echo "Checking API service status..."
+          gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='yaml(status)' || echo "API service check failed"
+          echo ""
+          echo "Checking Roadmap service status..."
+          gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='yaml(status)' || echo "Roadmap service check failed"
 
       - name: Show Cloud Run URLs
         run: |
