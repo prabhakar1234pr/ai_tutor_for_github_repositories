@@ -91,7 +91,7 @@ class VerificationAgent:
         """
         Verify task using agent with GitHub API tools.
 
-        Agent uses app's GitHub token (GITHUB_ACCESS_TOKEN from .env) for authenticated calls.
+        Agent uses app's GitHub token (GIT_ACCESS_TOKEN from .env) for authenticated calls.
         Agent NEVER sees user's PAT (stored in DB).
 
         Args:
@@ -99,7 +99,7 @@ class VerificationAgent:
             base_commit: Base commit SHA (starting point)
             head_commit: Head commit SHA (current state)
             repo_url: GitHub repository URL (notebook repo - user_repo_url)
-            github_token: App's GitHub token from .env (GITHUB_ACCESS_TOKEN), not user's PAT
+            github_token: App's GitHub token from .env (GIT_ACCESS_TOKEN), not user's PAT
             additional_context: Optional additional context (e.g., task title, type)
 
         Returns:

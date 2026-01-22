@@ -111,12 +111,10 @@ class Settings(BaseSettings):
     gcp_location: str = (
         "global"  # Maps to GCP_LOCATION (default: global - required for Gemini models)
     )
-    gemini_model: str = (
-        "gemini-2.0-flash-exp"  # Maps to GEMINI_MODEL (Vertex AI: gemini-2.0-flash-exp, gemini-2.5-flash, gemini-2.5-pro)
-    )
+    gemini_model: str = "gemini-2.0-flash-exp"  # Maps to GEMINI_MODEL (Vertex AI: gemini-2.0-flash-exp, gemini-2.5-flash, gemini-2.5-pro)
 
     # GitHub API
-    github_access_token: str | None = None  # Maps to GITHUB_ACCESS_TOKEN
+    git_access_token: str | None = None  # Maps to GIT_ACCESS_TOKEN
 
     # Redis (for rate limiting and caching)
     redis_url: str | None = None  # Maps to REDIS_URL (e.g., redis://localhost:6379/0)

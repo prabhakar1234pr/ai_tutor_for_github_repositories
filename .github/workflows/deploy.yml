@@ -1,0 +1,142 @@
+name: Deploy to GCP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  PROJECT_ID: gitguide-backend
+  REGION: us-central1
+  GAR_LOCATION: us-central1-docker.pkg.dev
+
+jobs:
+  # ============================================
+  # Build and Deploy Cloud Run Services
+  # ============================================
+  deploy-cloud-run:
+    name: Deploy to Cloud Run
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # Build and push main API image
+      - name: Build Main API Image
+        run: |
+          docker build \
+            -t ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/api:${{ github.sha }} \
+            -t ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/api:latest \
+            .
+
+      - name: Push Main API Image
+        run: |
+          docker push ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/api:${{ github.sha }}
+          docker push ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/api:latest
+
+      # Build and push roadmap service image
+      - name: Build Roadmap Service Image
+        run: |
+          docker build \
+            -f Dockerfile.roadmap \
+            -t ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/roadmap:${{ github.sha }} \
+            -t ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/roadmap:latest \
+            .
+
+      - name: Push Roadmap Service Image
+        run: |
+          docker push ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/roadmap:${{ github.sha }}
+          docker push ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/roadmap:latest
+
+      # Deploy Main API to Cloud Run
+      - name: Deploy Main API to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: gitguide-api
+          region: ${{ env.REGION }}
+          image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/api:${{ github.sha }}
+          flags: |
+            --memory=1Gi
+            --cpu=1
+            --timeout=300
+            --max-instances=10
+            --min-instances=0
+            --allow-unauthenticated
+            --set-env-vars=ENVIRONMENT=production
+
+      # Deploy Roadmap Service to Cloud Run
+      - name: Deploy Roadmap Service to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: gitguide-roadmap
+          region: ${{ env.REGION }}
+          image: ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/gitguide/roadmap:${{ github.sha }}
+          flags: |
+            --memory=2Gi
+            --cpu=2
+            --timeout=900
+            --max-instances=5
+            --min-instances=0
+            --no-allow-unauthenticated
+            --set-env-vars=ENVIRONMENT=production
+
+      - name: Show deployment URLs
+        run: |
+          echo "Main API URL:"
+          gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='value(status.url)'
+          echo ""
+          echo "Roadmap Service URL:"
+          gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='value(status.url)'
+
+  # ============================================
+  # Deploy to Workspace VM
+  # ============================================
+  deploy-workspace-vm:
+    name: Deploy to Workspace VM
+    runs-on: ubuntu-latest
+    needs: deploy-cloud-run
+    if: ${{ vars.DEPLOY_VM == 'true' }}  # Only deploy if VM deployment is enabled
+
+    steps:
+      - name: Deploy to Workspace VM via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            echo "🚀 Starting deployment to Workspace VM..."
+            cd /opt/gitguide-backend
+
+            echo "📥 Pulling latest code..."
+            git pull origin main
+
+            echo "📦 Installing dependencies..."
+            source .venv/bin/activate
+            uv pip install -r pyproject.toml
+
+            echo "🔄 Restarting service..."
+            sudo systemctl restart gitguide-workspaces
+
+            echo "✅ Checking service status..."
+            sleep 3
+            sudo systemctl status gitguide-workspaces --no-pager
+
+            echo "🎉 Deployment complete!"

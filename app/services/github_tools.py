@@ -221,14 +221,14 @@ async def execute_github_tool(
     """
     Execute a GitHub API tool and return the result.
 
-    Uses app's GitHub token (GITHUB_ACCESS_TOKEN from .env) for authenticated calls.
+    Uses app's GitHub token (GIT_ACCESS_TOKEN from .env) for authenticated calls.
     Agent NEVER receives user's PAT (stored in DB).
     All tools operate on the notebook repo (user_repo_url).
 
     Args:
         tool_name: Name of the tool to execute
         arguments: Tool arguments (from agent's tool call)
-        github_token: App's GitHub token from .env (GITHUB_ACCESS_TOKEN), not user's PAT
+        github_token: App's GitHub token from .env (GIT_ACCESS_TOKEN), not user's PAT
 
     Returns:
         Tool execution result dict

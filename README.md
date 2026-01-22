@@ -154,7 +154,7 @@ Settings are managed in `app/config.py` via environment variables:
 - Vector DB: `QDRANT_URL`, `QDRANT_API_KEY`
 - LLM: `GROQ_API_KEY` (dev) or `AZURE_OPENAI_KEY` (prod)
 - Auth: `CLERK_SECRET_KEY`, `JWT_SECRET`
-- GitHub: `GITHUB_ACCESS_TOKEN`
+- GitHub: `GIT_ACCESS_TOKEN`
 
 ## Running the Application
 
