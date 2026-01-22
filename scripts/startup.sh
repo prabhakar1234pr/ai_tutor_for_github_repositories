@@ -19,23 +19,22 @@ fi
 export PORT=${PORT:-8080}
 echo "Starting application on port $PORT"
 
-# Replace --port argument in command if present
-ARGS=()
-SKIP_NEXT=false
+# Extract app module from command arguments (e.g., "app.main:app" or "app.roadmap_service:app")
+APP_MODULE=""
 for arg in "$@"; do
-    if [ "$SKIP_NEXT" = true ]; then
-        # Skip the port number after --port
-        SKIP_NEXT=false
-        continue
-    elif [ "$arg" = "--port" ]; then
-        # Replace --port with --port $PORT
-        ARGS+=("--port")
-        ARGS+=("$PORT")
-        SKIP_NEXT=true
-    else
-        ARGS+=("$arg")
+    # Look for the app module (contains colon, like "app.main:app")
+    if [[ "$arg" == *":"* ]] && [[ "$arg" != *"--"* ]] && [[ ! "$arg" =~ ^-- ]]; then
+        APP_MODULE="$arg"
+        break
     fi
 done
 
-# Execute the command with updated port
-exec "${ARGS[@]}"
+# Default to main app if not found
+if [ -z "$APP_MODULE" ]; then
+    APP_MODULE="app.main:app"
+fi
+
+echo "Starting uvicorn with module: $APP_MODULE on port $PORT"
+
+# Start uvicorn with the correct PORT (Cloud Run requirement)
+exec uvicorn "$APP_MODULE" --host 0.0.0.0 --port "$PORT"
