@@ -62,6 +62,7 @@ jobs:
           docker push ${{ env.GAR_LOCATION }}/${{ env.PROJECT_ID }}/${{ env.AR_REPO }}/roadmap:${{ github.sha }}
 
       - name: Deploy API (Cloud Run)
+        id: deploy-api
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: gitguide-api
@@ -76,6 +77,7 @@ jobs:
             --max-instances=10
             --min-instances=0
             --service-account=${{ env.CLOUD_RUN_RUNTIME_SA }}
+            --no-cpu-throttling
           env_vars: |
             ENVIRONMENT=production
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
@@ -91,7 +93,17 @@ jobs:
             # CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
             # REDIS_URL=${{ secrets.REDIS_URL }}
 
+      - name: Check API Deployment Logs
+        if: always()
+        run: |
+          echo "=== Recent API Service Logs ==="
+          gcloud run services logs read gitguide-api --region=${{ env.REGION }} --limit=50 || echo "Could not retrieve logs"
+          echo ""
+          echo "=== API Revision Status ==="
+          gcloud run revisions list --service=gitguide-api --region=${{ env.REGION }} --limit=1 --format='table(metadata.name,status.conditions[0].type,status.conditions[0].status)' || echo "Could not retrieve revision status"
+
       - name: Deploy Roadmap (Cloud Run)
+        id: deploy-roadmap
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: gitguide-roadmap
@@ -106,6 +118,7 @@ jobs:
             --max-instances=5
             --min-instances=0
             --service-account=${{ env.CLOUD_RUN_RUNTIME_SA }}
+            --no-cpu-throttling
           env_vars: |
             ENVIRONMENT=production
             GCP_PROJECT_ID=${{ env.PROJECT_ID }}
@@ -118,12 +131,45 @@ jobs:
             CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
 
+      - name: Check Roadmap Deployment Logs
+        if: always()
+        run: |
+          echo "=== Recent Roadmap Service Logs ==="
+          gcloud run services logs read gitguide-roadmap --region=${{ env.REGION }} --limit=50 || echo "Could not retrieve logs"
+          echo ""
+          echo "=== Roadmap Revision Status ==="
+          gcloud run revisions list --service=gitguide-roadmap --region=${{ env.REGION }} --limit=1 --format='table(metadata.name,status.conditions[0].type,status.conditions[0].status)' || echo "Could not retrieve revision status"
+
+      - name: Wait for Services to be Ready
+        run: |
+          echo "Waiting for API service to be ready..."
+          for i in {1..30}; do
+            STATUS=$(gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='value(status.conditions[0].status)' 2>/dev/null || echo "UNKNOWN")
+            if [ "$STATUS" = "True" ]; then
+              echo "API service is ready!"
+              break
+            fi
+            echo "Attempt $i/30: Status is $STATUS, waiting..."
+            sleep 10
+          done
+          echo ""
+          echo "Waiting for Roadmap service to be ready..."
+          for i in {1..30}; do
+            STATUS=$(gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='value(status.conditions[0].status)' 2>/dev/null || echo "UNKNOWN")
+            if [ "$STATUS" = "True" ]; then
+              echo "Roadmap service is ready!"
+              break
+            fi
+            echo "Attempt $i/30: Status is $STATUS, waiting..."
+            sleep 10
+          done
+
       - name: Verify Deployments
         run: |
-          echo "Checking API service status..."
+          echo "=== API Service Status ==="
           gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='yaml(status)' || echo "API service check failed"
           echo ""
-          echo "Checking Roadmap service status..."
+          echo "=== Roadmap Service Status ==="
           gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='yaml(status)' || echo "Roadmap service check failed"
 
       - name: Show Cloud Run URLs
