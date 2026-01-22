@@ -31,6 +31,7 @@ jobs:
         # NOTE: Service account must have these roles:
         # 1. Artifact Registry Writer: roles/artifactregistry.writer
         # 2. Cloud Run Admin: roles/run.admin
+        # 3. Service Account User: roles/iam.serviceAccountUser (to act as runtime SA)
         # Grant with:
         # gcloud projects add-iam-policy-binding gitguide-backend \
         #   --member="serviceAccount:gemini-api-service@gitguide-backend.iam.gserviceaccount.com" \
@@ -38,6 +39,9 @@ jobs:
         # gcloud projects add-iam-policy-binding gitguide-backend \
         #   --member="serviceAccount:gemini-api-service@gitguide-backend.iam.gserviceaccount.com" \
         #   --role="roles/run.admin"
+        # gcloud projects add-iam-policy-binding gitguide-backend \
+        #   --member="serviceAccount:gemini-api-service@gitguide-backend.iam.gserviceaccount.com" \
+        #   --role="roles/iam.serviceAccountUser"
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
