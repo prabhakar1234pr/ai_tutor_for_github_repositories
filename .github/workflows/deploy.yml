@@ -28,10 +28,16 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-        # NOTE: Service account must have "Artifact Registry Writer" role
-        # Grant with: gcloud projects add-iam-policy-binding gitguide-backend \
-        #   --member="serviceAccount:SERVICE_ACCOUNT_EMAIL" \
+        # NOTE: Service account must have these roles:
+        # 1. Artifact Registry Writer: roles/artifactregistry.writer
+        # 2. Cloud Run Admin: roles/run.admin
+        # Grant with:
+        # gcloud projects add-iam-policy-binding gitguide-backend \
+        #   --member="serviceAccount:gemini-api-service@gitguide-backend.iam.gserviceaccount.com" \
         #   --role="roles/artifactregistry.writer"
+        # gcloud projects add-iam-policy-binding gitguide-backend \
+        #   --member="serviceAccount:gemini-api-service@gitguide-backend.iam.gserviceaccount.com" \
+        #   --role="roles/run.admin"
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
