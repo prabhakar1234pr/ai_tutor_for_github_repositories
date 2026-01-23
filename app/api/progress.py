@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from supabase import Client
 
 from app.core.supabase_client import execute_with_retry, get_supabase_client
-from app.services.roadmap_generation import trigger_incremental_generation_sync
+from app.services.roadmap_client import call_roadmap_service_incremental_sync
 from app.services.task_validation import validate_task_completion
 from app.utils.clerk_auth import verify_clerk_token
 
@@ -536,9 +536,9 @@ async def complete_concept(
             "project_id", project_id
         ).execute()
 
-        # Trigger incremental concept generation (event-based)
+        # Trigger incremental concept generation via roadmap service (event-based)
         logger.info(f"🔄 Triggering incremental generation after concept {concept_id} completion")
-        background_tasks.add_task(trigger_incremental_generation_sync, project_id)
+        background_tasks.add_task(call_roadmap_service_incremental_sync, project_id)
 
         # Check if all concepts for the day are done
         concept_response = (
@@ -1069,18 +1069,18 @@ async def _check_and_complete_concept_if_ready(
                 "project_id", project_id
             ).execute()
 
-            # Trigger incremental concept generation (event-based)
+            # Trigger incremental concept generation via roadmap service (event-based)
             logger.info(
                 f"🔄 Triggering incremental generation after auto-completion of concept {concept_id}"
             )
             # Use asyncio.create_task since we're in an async context
             import asyncio
 
-            from app.services.roadmap_generation import run_incremental_concept_generation
+            from app.services.roadmap_client import call_roadmap_service_incremental
 
             try:
-                # Create background task (fire and forget)
-                asyncio.create_task(run_incremental_concept_generation(project_id))
+                # Create background task (fire and forget) - calls roadmap service via HTTP
+                asyncio.create_task(call_roadmap_service_incremental(project_id))
             except Exception as e:
                 logger.warning(f"⚠️  Failed to trigger incremental generation: {e}")
 

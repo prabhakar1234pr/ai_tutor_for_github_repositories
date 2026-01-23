@@ -47,9 +47,34 @@ def mock_groq_service_default(monkeypatch, request):
 
     # Patch all modules that import get_groq_service directly
     monkeypatch.setattr("app.services.groq_service.get_groq_service", lambda: dummy_service)
-    monkeypatch.setattr("app.agents.nodes.analyze_repo.get_groq_service", lambda: dummy_service)
-    monkeypatch.setattr("app.agents.nodes.plan_curriculum.get_groq_service", lambda: dummy_service)
-    monkeypatch.setattr("app.agents.nodes.generate_content.get_groq_service", lambda: dummy_service)
+    # Only patch if the attribute exists (some modules may not have it)
+    try:
+        import app.agents.nodes.analyze_repo
+
+        if hasattr(app.agents.nodes.analyze_repo, "get_groq_service"):
+            monkeypatch.setattr(
+                "app.agents.nodes.analyze_repo.get_groq_service", lambda: dummy_service
+            )
+    except (AttributeError, ImportError):
+        pass
+    try:
+        import app.agents.nodes.plan_curriculum
+
+        if hasattr(app.agents.nodes.plan_curriculum, "get_groq_service"):
+            monkeypatch.setattr(
+                "app.agents.nodes.plan_curriculum.get_groq_service", lambda: dummy_service
+            )
+    except (AttributeError, ImportError):
+        pass
+    try:
+        import app.agents.nodes.generate_content
+
+        if hasattr(app.agents.nodes.generate_content, "get_groq_service"):
+            monkeypatch.setattr(
+                "app.agents.nodes.generate_content.get_groq_service", lambda: dummy_service
+            )
+    except (AttributeError, ImportError):
+        pass
     monkeypatch.setattr("app.services.rag_pipeline.get_groq_service", lambda: dummy_service)
 
 
