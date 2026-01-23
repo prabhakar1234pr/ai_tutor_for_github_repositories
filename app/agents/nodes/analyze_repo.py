@@ -201,17 +201,51 @@ async def analyze_repository(state: RoadmapAgentState) -> RoadmapAgentState:
         )
 
         logger.info(f"   ✅ Stage 1 Gemini response received ({len(stage1_response)} chars)")
-        logger.debug(f"   Stage 1 response length: {len(stage1_response)} chars")
+        logger.debug(f"   Stage 1 response preview: {stage1_response[:200]}")
 
-        # Parse Stage 1 response
-        try:
-            preliminary_analysis = await parse_llm_json_response_async(
-                stage1_response, expected_type="object"
-            )
-            logger.info("✅ Stage 1 complete: High-level analysis obtained")
-        except Exception as parse_error:
-            logger.error(f"❌ Failed to parse Stage 1 JSON: {parse_error}")
-            raise ValueError(f"Invalid JSON in Stage 1: {parse_error}") from parse_error
+        # Check for empty or invalid response
+        if not stage1_response or not stage1_response.strip():
+            logger.error("❌ Stage 1 received empty response from Gemini")
+            raise ValueError("Empty response from Gemini API in Stage 1")
+
+        # Parse Stage 1 response with retry on empty JSON
+        max_retries = 2
+        preliminary_analysis = None
+
+        for attempt in range(max_retries):
+            try:
+                preliminary_analysis = await parse_llm_json_response_async(
+                    stage1_response, expected_type="object"
+                )
+                if preliminary_analysis:
+                    logger.info("✅ Stage 1 complete: High-level analysis obtained")
+                    break
+            except ValueError as parse_error:
+                error_msg = str(parse_error).lower()
+                if "empty response" in error_msg and attempt < max_retries - 1:
+                    logger.warning(
+                        f"⚠️  Stage 1 returned empty JSON (attempt {attempt + 1}/{max_retries}), retrying..."
+                    )
+                    # Retry with a more explicit prompt
+                    retry_prompt = (
+                        f"{stage1_prompt}\n\n"
+                        "IMPORTANT: You must return a valid JSON object. Do not use markdown code blocks. "
+                        "Return ONLY the JSON object starting with { and ending with }."
+                    )
+                    stage1_response = await gemini_service.generate_response_async(
+                        user_query=retry_prompt,
+                        system_prompt=system_prompt,
+                        context="",
+                    )
+                    logger.debug(f"   Retry response preview: {stage1_response[:200]}")
+                    continue
+                else:
+                    logger.error(f"❌ Failed to parse Stage 1 JSON: {parse_error}")
+                    logger.error(f"   Response was: {stage1_response[:500]}")
+                    raise ValueError(f"Invalid JSON in Stage 1: {parse_error}") from parse_error
+
+        if not preliminary_analysis:
+            raise ValueError("Failed to get valid JSON from Stage 1 after retries")
 
         # ===== STAGE 2: Detailed analysis with summary + remaining chunks =====
         logger.info(

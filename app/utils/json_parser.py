@@ -286,11 +286,30 @@ async def parse_llm_json_response_async(
     # Try basic parsing (same logic as sync version)
     text = response_text.strip()
 
-    # Remove ALL markdown code blocks (not just JSON ones)
-    text = re.sub(r"```[a-z]*\n.*?```", "", text, flags=re.DOTALL)
+    # Check if response is just an empty markdown code block
+    if re.match(r"^```[a-z]*\s*```\s*$", text, re.IGNORECASE | re.DOTALL):
+        raise ValueError(
+            "Empty markdown code block received. LLM returned empty JSON. "
+            "Original response: " + response_text[:500]
+        )
 
-    # Also remove inline code blocks
-    text = re.sub(r"`[^`]+`", "", text)
+    # Remove ALL markdown code blocks (not just JSON ones)
+    # But preserve content inside JSON code blocks
+    if "```json" in text.lower() or "```" in text:
+        # Try to extract JSON from markdown code block first
+        json_match = re.search(r"```json\s*\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
+        if json_match:
+            text = json_match.group(1).strip()
+        else:
+            # No JSON found in code block, remove all code blocks
+            text = re.sub(r"```[a-z]*\n.*?```", "", text, flags=re.DOTALL)
+    else:
+        # No code blocks, use text as-is
+        pass
+
+    # Also remove inline code blocks (but only if we still have content)
+    if text.strip():
+        text = re.sub(r"`[^`]+`", "", text)
 
     # Remove any remaining markdown formatting
     text = re.sub(r"^\*\*.*?\*\*:\s*", "", text, flags=re.MULTILINE)
