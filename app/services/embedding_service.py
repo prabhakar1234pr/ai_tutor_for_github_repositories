@@ -73,16 +73,82 @@ class EmbeddingService:
     def _init_vertex_ai(self):
         """Initialize Vertex AI embeddings (recommended for GCP)."""
         try:
+            import json
+            from pathlib import Path
+
             import vertexai
             from vertexai.language_models import TextEmbeddingModel
 
-            if not settings.gcp_project_id:
-                raise ValueError(
-                    "GCP_PROJECT_ID is required for Vertex AI embeddings. Set it in your .env file."
-                )
+            from app.config import PROJECT_ROOT
 
-            # Initialize Vertex AI
-            vertexai.init(project=settings.gcp_project_id, location=settings.gcp_location)
+            # Check for service account (preferred method - uses GCP free credits)
+            if settings.google_application_credentials:
+                creds_path = Path(settings.google_application_credentials)
+                if not creds_path.is_absolute():
+                    creds_path = PROJECT_ROOT / creds_path
+
+                if creds_path.exists():
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(creds_path)
+                    project_id = settings.gcp_project_id
+                    if not project_id:
+                        # Try to read project_id from JSON
+                        try:
+                            with open(creds_path) as f:
+                                creds_data = json.load(f)
+                                project_id = creds_data.get("project_id")
+                                if project_id:
+                                    logger.info(f"✅ Found project_id in JSON: {project_id}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to read project_id from JSON: {e}")
+
+                    if not project_id:
+                        raise ValueError(
+                            "GCP_PROJECT_ID is required when using service account. "
+                            "Set it in .env or ensure it's in your JSON file."
+                        )
+
+                    vertexai.init(project=project_id, location=settings.gcp_location)
+                    logger.info(f"✅ Using Vertex AI with Service Account (project: {project_id})")
+                else:
+                    logger.warning(f"⚠️ Service account file not found: {creds_path}")
+                    logger.warning("   Falling back to Application Default Credentials")
+
+            # Fallback: Use Application Default Credentials (ADC) on GCP (Cloud Run / GCE)
+            # This works when the Cloud Run service is configured with a runtime service account
+            if (
+                not settings.google_application_credentials
+                or not Path(settings.google_application_credentials).exists()
+            ):
+                try:
+                    import google.auth
+
+                    creds, adc_project_id = google.auth.default()
+                    if creds:
+                        project_id = settings.gcp_project_id or adc_project_id
+                        if not project_id:
+                            raise ValueError(
+                                "GCP_PROJECT_ID is required when using Application Default Credentials. "
+                                "Set it as an environment variable (GCP_PROJECT_ID)."
+                            )
+                        vertexai.init(project=project_id, location=settings.gcp_location)
+                        logger.info(
+                            f"✅ Using Vertex AI with Application Default Credentials (project: {project_id})"
+                        )
+                    else:
+                        raise ValueError("Failed to get Application Default Credentials")
+                except ImportError as import_err:
+                    # If google.auth not available, require explicit config
+                    if not settings.gcp_project_id:
+                        raise ValueError(
+                            "GCP_PROJECT_ID is required for Vertex AI embeddings. Set it in your .env file."
+                        ) from import_err
+                    vertexai.init(project=settings.gcp_project_id, location=settings.gcp_location)
+                    logger.info(
+                        f"✅ Using Vertex AI (project: {settings.gcp_project_id}, "
+                        "assuming credentials are configured)"
+                    )
+
+            # Initialize the embedding model
             self._vertex_ai_client = TextEmbeddingModel.from_pretrained(
                 settings.embedding_model_name
             )
