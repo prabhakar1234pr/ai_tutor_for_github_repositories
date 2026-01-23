@@ -16,7 +16,9 @@ from app.core.qdrant_client import get_qdrant_client
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "gitguide_chunks"
-VECTOR_SIZE = 384
+# Default vector size (will be determined dynamically from embedding service)
+# Legacy: 384 for all-MiniLM-L6-v2, 768 for textembedding-gecko, 3072 for gemini-embedding-001
+DEFAULT_VECTOR_SIZE = 384
 
 # Lazy singleton instance
 _qdrant_service_instance = None
@@ -56,20 +58,39 @@ class QdrantService:
             self._ensure_collection()
         logger.info("✅ QdrantService initialized successfully")
 
+    def _get_embedding_dimension(self) -> int:
+        """Get the embedding dimension from the embedding service."""
+        try:
+            from app.services.embedding_service import get_embedding_service
+
+            # Create a test embedding to get the dimension
+            embedding_service = get_embedding_service()
+            test_embedding = embedding_service.embed_texts(["test"])
+            if test_embedding and len(test_embedding) > 0:
+                dimension = len(test_embedding[0])
+                logger.info(f"✅ Detected embedding dimension: {dimension}")
+                return dimension
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to detect embedding dimension: {e}, using default")
+        return DEFAULT_VECTOR_SIZE
+
     def _ensure_collection(self):
         logger.debug(f"🔍 Checking if collection '{COLLECTION_NAME}' exists")
         collections = self.client.get_collections().collections
         collection_names = [c.name for c in collections]
 
+        # Get the correct vector size from embedding service
+        vector_size = self._get_embedding_dimension()
+
         collection_created = False
         if COLLECTION_NAME not in collection_names:
             logger.info(f"📦 Creating new Qdrant collection: {COLLECTION_NAME}")
-            logger.debug(f"   Vector size: {VECTOR_SIZE}")
+            logger.debug(f"   Vector size: {vector_size}")
             logger.debug("   Distance metric: Cosine")
             self.client.create_collection(
                 collection_name=COLLECTION_NAME,
                 vectors_config={
-                    "size": VECTOR_SIZE,
+                    "size": vector_size,
                     "distance": "Cosine",
                 },
             )
@@ -77,6 +98,25 @@ class QdrantService:
             collection_created = True
         else:
             logger.debug(f"✅ Collection '{COLLECTION_NAME}' already exists")
+            # Validate existing collection has correct dimension
+            try:
+                collection_info = self.client.get_collection(COLLECTION_NAME)
+                existing_size = collection_info.config.params.vectors.size
+                if existing_size != vector_size:
+                    logger.error(
+                        f"❌ Dimension mismatch! Collection expects {existing_size} dimensions, "
+                        f"but embedding model produces {vector_size} dimensions. "
+                        f"Please delete the collection '{COLLECTION_NAME}' and recreate it, "
+                        f"or use a compatible embedding model."
+                    )
+                    raise ValueError(
+                        f"Qdrant collection dimension mismatch: collection={existing_size}, "
+                        f"embedding={vector_size}. Delete collection '{COLLECTION_NAME}' to recreate."
+                    )
+                else:
+                    logger.debug(f"✅ Collection dimension verified: {vector_size}")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not verify collection dimension: {e}")
 
         # Ensure index exists on project_id field for efficient filtering
         # This is critical for filter operations (delete, search)
@@ -124,7 +164,25 @@ class QdrantService:
             f"🔍 Upserting {len(embeddings)} embeddings into Qdrant collection '{COLLECTION_NAME}'"
         )
         logger.debug(f"   Project ID: {project_id}")
-        logger.debug(f"   Vector dimension: {len(embeddings[0]) if embeddings else 0}")
+
+        # Validate embedding dimension matches collection
+        embedding_dim = len(embeddings[0]) if embeddings else 0
+        logger.debug(f"   Vector dimension: {embedding_dim}")
+
+        # Verify collection dimension matches
+        try:
+            collection_info = self.client.get_collection(COLLECTION_NAME)
+            expected_dim = collection_info.config.params.vectors.size
+            if embedding_dim != expected_dim:
+                raise ValueError(
+                    f"Embedding dimension mismatch: embeddings have {embedding_dim} dimensions, "
+                    f"but collection expects {expected_dim}. "
+                    f"Please delete collection '{COLLECTION_NAME}' and recreate it."
+                )
+        except Exception as e:
+            if "dimension mismatch" in str(e).lower() or "dimension" in str(e).lower():
+                raise
+            logger.warning(f"⚠️  Could not verify collection dimension: {e}")
 
         # Count unique files and languages
         unique_files = {m["file_path"] for m in metadatas}
