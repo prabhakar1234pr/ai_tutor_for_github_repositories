@@ -103,16 +103,31 @@ class QdrantService:
                 collection_info = self.client.get_collection(COLLECTION_NAME)
                 existing_size = collection_info.config.params.vectors.size
                 if existing_size != vector_size:
-                    logger.error(
-                        f"❌ Dimension mismatch! Collection expects {existing_size} dimensions, "
-                        f"but embedding model produces {vector_size} dimensions. "
-                        f"Please delete the collection '{COLLECTION_NAME}' and recreate it, "
-                        f"or use a compatible embedding model."
+                    logger.warning(
+                        f"⚠️  Dimension mismatch detected! Collection has {existing_size} dimensions, "
+                        f"but embedding model produces {vector_size} dimensions."
                     )
-                    raise ValueError(
-                        f"Qdrant collection dimension mismatch: collection={existing_size}, "
-                        f"embedding={vector_size}. Delete collection '{COLLECTION_NAME}' to recreate."
+                    logger.warning(
+                        f"🗑️  Deleting old collection '{COLLECTION_NAME}' to recreate with correct dimension..."
                     )
+                    # Delete the old collection
+                    self.client.delete_collection(COLLECTION_NAME)
+                    logger.info(f"✅ Deleted old collection '{COLLECTION_NAME}'")
+                    # Recreate with correct dimension
+                    logger.info(f"📦 Creating new Qdrant collection: {COLLECTION_NAME}")
+                    logger.debug(f"   Vector size: {vector_size}")
+                    logger.debug("   Distance metric: Cosine")
+                    self.client.create_collection(
+                        collection_name=COLLECTION_NAME,
+                        vectors_config={
+                            "size": vector_size,
+                            "distance": "Cosine",
+                        },
+                    )
+                    logger.info(
+                        f"✅ Collection '{COLLECTION_NAME}' recreated successfully with {vector_size} dimensions"
+                    )
+                    collection_created = True
                 else:
                     logger.debug(f"✅ Collection dimension verified: {vector_size}")
             except Exception as e:
@@ -169,20 +184,70 @@ class QdrantService:
         embedding_dim = len(embeddings[0]) if embeddings else 0
         logger.debug(f"   Vector dimension: {embedding_dim}")
 
-        # Verify collection dimension matches
+        # Verify collection dimension matches - auto-fix if mismatch
         try:
             collection_info = self.client.get_collection(COLLECTION_NAME)
             expected_dim = collection_info.config.params.vectors.size
             if embedding_dim != expected_dim:
-                raise ValueError(
-                    f"Embedding dimension mismatch: embeddings have {embedding_dim} dimensions, "
-                    f"but collection expects {expected_dim}. "
-                    f"Please delete collection '{COLLECTION_NAME}' and recreate it."
+                logger.warning(
+                    f"⚠️  Dimension mismatch detected during upsert! Collection has {expected_dim} dimensions, "
+                    f"but embeddings have {embedding_dim} dimensions."
                 )
+                logger.warning(
+                    f"🗑️  Deleting and recreating collection '{COLLECTION_NAME}' with correct dimension..."
+                )
+                # Delete and recreate collection with correct dimension
+                self.client.delete_collection(COLLECTION_NAME)
+                logger.info(f"✅ Deleted old collection '{COLLECTION_NAME}'")
+                self.client.create_collection(
+                    collection_name=COLLECTION_NAME,
+                    vectors_config={
+                        "size": embedding_dim,
+                        "distance": "Cosine",
+                    },
+                )
+                logger.info(
+                    f"✅ Recreated collection '{COLLECTION_NAME}' with {embedding_dim} dimensions"
+                )
+                # Recreate the index
+                try:
+                    self.client.create_payload_index(
+                        collection_name=COLLECTION_NAME,
+                        field_name="project_id",
+                        field_schema="keyword",
+                    )
+                    logger.info("✅ Recreated index on 'project_id' field")
+                except Exception as idx_err:
+                    error_msg = str(idx_err).lower()
+                    if "already exists" not in error_msg and "duplicate" not in error_msg:
+                        logger.warning(f"⚠️  Failed to recreate index: {idx_err}")
         except Exception as e:
-            if "dimension mismatch" in str(e).lower() or "dimension" in str(e).lower():
-                raise
-            logger.warning(f"⚠️  Could not verify collection dimension: {e}")
+            error_msg = str(e).lower()
+            if "not found" in error_msg or "does not exist" in error_msg:
+                # Collection doesn't exist, create it
+                logger.info(f"📦 Collection '{COLLECTION_NAME}' not found, creating it...")
+                embedding_dim = len(embeddings[0]) if embeddings else 0
+                self.client.create_collection(
+                    collection_name=COLLECTION_NAME,
+                    vectors_config={
+                        "size": embedding_dim,
+                        "distance": "Cosine",
+                    },
+                )
+                logger.info(
+                    f"✅ Created collection '{COLLECTION_NAME}' with {embedding_dim} dimensions"
+                )
+                # Create index
+                try:
+                    self.client.create_payload_index(
+                        collection_name=COLLECTION_NAME,
+                        field_name="project_id",
+                        field_schema="keyword",
+                    )
+                except Exception:
+                    pass  # Index creation is best effort
+            else:
+                logger.warning(f"⚠️  Could not verify collection dimension: {e}")
 
         # Count unique files and languages
         unique_files = {m["file_path"] for m in metadatas}
