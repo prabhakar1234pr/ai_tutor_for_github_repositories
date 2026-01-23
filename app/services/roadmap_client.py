@@ -42,6 +42,16 @@ async def call_roadmap_service_incremental(project_id: str) -> dict:
         raise ValueError("Internal auth token not configured")
 
     url = f"{settings.roadmap_service_url}/api/roadmap/incremental-generate"
+    # Verify token is configured
+    if not settings.internal_auth_token:
+        logger.error("=" * 70)
+        logger.error("❌ INTERNAL_AUTH_TOKEN NOT CONFIGURED IN MAIN API!")
+        logger.error("=" * 70)
+        raise ValueError("INTERNAL_AUTH_TOKEN not configured")
+
+    logger.info(f"🔐 Using auth token (first 20 chars): {settings.internal_auth_token[:20]}...")
+    logger.info(f"🔐 Token length: {len(settings.internal_auth_token)}")
+
     headers = {
         "X-Internal-Token": settings.internal_auth_token,
         "Content-Type": "application/json",
@@ -136,6 +146,16 @@ async def call_roadmap_service_generate(
         raise ValueError("Internal auth token not configured")
 
     url = f"{settings.roadmap_service_url}/api/roadmap/generate-internal"
+    # Verify token is configured
+    if not settings.internal_auth_token:
+        logger.error("=" * 70)
+        logger.error("❌ INTERNAL_AUTH_TOKEN NOT CONFIGURED IN MAIN API!")
+        logger.error("=" * 70)
+        raise ValueError("INTERNAL_AUTH_TOKEN not configured")
+
+    logger.info(f"🔐 Using auth token (first 20 chars): {settings.internal_auth_token[:20]}...")
+    logger.info(f"🔐 Token length: {len(settings.internal_auth_token)}")
+
     headers = {
         "X-Internal-Token": settings.internal_auth_token,
         "Content-Type": "application/json",

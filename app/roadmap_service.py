@@ -12,7 +12,7 @@ All LangGraph workflows execute here:
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -66,23 +66,42 @@ app.include_router(roadmap_gen_router, prefix="/api/roadmap", tags=["roadmap-gen
 
 
 # Internal auth dependency for service-to-service calls
-async def verify_internal_auth(x_internal_token: str | None = Header(None)):
+async def verify_internal_auth(request: Request):
     """Verify internal auth token for service-to-service calls."""
-    logger.debug(
-        f"🔐 Verifying internal auth token (token provided: {x_internal_token is not None})"
+    # Get the token from the header (case-insensitive)
+    x_internal_token = request.headers.get("X-Internal-Token") or request.headers.get(
+        "x-internal-token"
     )
+
+    logger.info("=" * 70)
+    logger.info("🔐 INTERNAL AUTH VERIFICATION")
+    logger.info(f"   Token received: {x_internal_token is not None}")
+    logger.info(
+        f"   Token value (first 20 chars): {x_internal_token[:20] if x_internal_token else 'None'}..."
+    )
+    logger.info(
+        f"   Expected token (first 20 chars): {settings.internal_auth_token[:20] if settings.internal_auth_token else 'None'}..."
+    )
+    logger.info(f"   All headers: {dict(request.headers)}")
+    logger.info("=" * 70)
 
     if not settings.internal_auth_token:
         logger.error("❌ INTERNAL_AUTH_TOKEN not configured - internal endpoints disabled")
         raise HTTPException(status_code=503, detail="Internal auth not configured")
 
     if x_internal_token != settings.internal_auth_token:
-        logger.warning(
-            f"⚠️  Invalid internal auth token attempt (expected: {settings.internal_auth_token[:10]}..., got: {x_internal_token[:10] if x_internal_token else None}...)"
+        logger.error("=" * 70)
+        logger.error("❌ TOKEN MISMATCH")
+        logger.error(
+            f"   Expected length: {len(settings.internal_auth_token) if settings.internal_auth_token else 0}"
         )
+        logger.error(f"   Received length: {len(x_internal_token) if x_internal_token else 0}")
+        logger.error(f"   Expected (full): {settings.internal_auth_token}")
+        logger.error(f"   Received (full): {x_internal_token}")
+        logger.error("=" * 70)
         raise HTTPException(status_code=403, detail="Invalid internal auth token")
 
-    logger.debug("✅ Internal auth token verified successfully")
+    logger.info("✅ Internal auth token verified successfully")
     return True
 
 
