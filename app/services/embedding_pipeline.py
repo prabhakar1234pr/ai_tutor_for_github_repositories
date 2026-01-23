@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from functools import partial
 
 from app.core.supabase_client import get_supabase_client
 from app.services.chunk_storage import store_chunks
@@ -87,8 +88,11 @@ async def run_embedding_pipeline(
         logger.info(f"✂️  Step 3/7: Chunking {len(files)} files into text chunks")
         chunk_start = time.time()
         # Run chunking in thread pool to avoid blocking event loop
+        # Use functools.partial to pass keyword arguments (chunk_files uses keyword-only args)
         loop = asyncio.get_event_loop()
-        chunks = await loop.run_in_executor(None, chunk_files, project_id, files)
+        chunks = await loop.run_in_executor(
+            None, partial(chunk_files, project_id=project_id, files=files)
+        )
         chunk_duration = time.time() - chunk_start
         total_tokens = sum(c["token_count"] for c in chunks)
 
