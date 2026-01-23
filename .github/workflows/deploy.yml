@@ -128,6 +128,8 @@ jobs:
             QDRANT_API_KEY=${{ secrets.QDRANT_API_KEY }}
             CLERK_SECRET_KEY=${{ secrets.CLERK_SECRET_KEY }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
+            GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+            GROQ_API_KEY2=${{ secrets.GROQ_API_KEY2 }}
 
       - name: Check Roadmap Deployment Logs
         if: always()
