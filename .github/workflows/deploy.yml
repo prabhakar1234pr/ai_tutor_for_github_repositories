@@ -133,6 +133,7 @@ jobs:
             GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
             GROQ_API_KEY2=${{ secrets.GROQ_API_KEY2 }}
             INTERNAL_AUTH_TOKEN=${{ secrets.INTERNAL_AUTH_TOKEN }}
+            GCP_SA_KEY=${{ secrets.GCP_SA_KEY }}
 
       - name: Check Roadmap Deployment Logs
         if: always()

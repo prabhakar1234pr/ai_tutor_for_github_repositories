@@ -115,6 +115,12 @@ async def run_roadmap_generation(
     logger.info("=" * 70)
 
     try:
+        logger.info("🔄 Calling run_roadmap_agent (LangGraph workflow)")
+        logger.info(f"   📦 Project ID: {project_id}")
+        logger.info(f"   🔗 GitHub URL: {github_url}")
+        logger.info(f"   📊 Skill Level: {skill_level}")
+        logger.info(f"   📅 Target Days: {target_days}")
+
         # Run the roadmap agent
         result = await run_roadmap_agent(
             project_id=project_id,
@@ -122,6 +128,9 @@ async def run_roadmap_generation(
             skill_level=skill_level,
             target_days=target_days,
         )
+
+        logger.info(f"📊 Roadmap agent returned result: success={result.get('success')}")
+        logger.debug(f"   Full result: {result}")
 
         if result["success"]:
             # Check if it was paused vs truly completed
@@ -151,7 +160,12 @@ async def run_roadmap_generation(
             # But we don't want to mark the whole project as failed since embeddings succeeded
 
     except Exception as e:
-        logger.error(f"❌ Error in roadmap generation: {e}", exc_info=True)
+        logger.error("=" * 70)
+        logger.error("❌ CRITICAL ERROR IN ROADMAP GENERATION")
+        logger.error(f"   📦 Project ID: {project_id}")
+        logger.error(f"   ⚠️  Error Type: {type(e).__name__}")
+        logger.error(f"   ⚠️  Error Message: {str(e)}")
+        logger.error("=" * 70, exc_info=True)
         # Don't raise - this is a background task, we don't want to crash the main process
 
 
@@ -205,9 +219,17 @@ async def run_incremental_concept_generation(project_id: str):
     Args:
         project_id: UUID of the project
     """
-    logger.info(f"🔄 Starting incremental concept generation for project_id={project_id}")
+    logger.info("=" * 70)
+    logger.info("🔄 STARTING INCREMENTAL CONCEPT GENERATION")
+    logger.info("=" * 70)
+    logger.info(f"   📦 Project ID: {project_id}")
+    logger.info(
+        f"   🕐 Timestamp: {__import__('datetime').datetime.now(__import__('datetime').UTC).isoformat()}"
+    )
+    logger.info("=" * 70)
 
     try:
+        logger.info("📊 Loading project data from Supabase...")
         supabase = get_supabase_client()
 
         # Load project data
@@ -221,7 +243,9 @@ async def run_incremental_concept_generation(project_id: str):
         )
 
         if not project_response.data:
-            logger.error(f"❌ Project {project_id} not found")
+            logger.error("=" * 70)
+            logger.error(f"❌ Project {project_id} not found in database")
+            logger.error("=" * 70)
             return
 
         project = project_response.data[0]
@@ -231,10 +255,18 @@ async def run_incremental_concept_generation(project_id: str):
         user_id = project.get("user_id")
         curriculum_structure = project.get("curriculum_structure")
 
+        logger.info("✅ Project data loaded:")
+        logger.info(f"   🔗 GitHub URL: {github_url}")
+        logger.info(f"   📊 Skill Level: {skill_level}")
+        logger.info(f"   📅 Target Days: {target_days}")
+        logger.info(f"   👤 User ID: {user_id}")
+        logger.info(f"   📚 Has Curriculum: {curriculum_structure is not None}")
+
         if not curriculum_structure:
-            logger.warning(
-                f"⚠️  No curriculum_structure found for project {project_id}. Skipping incremental generation."
-            )
+            logger.warning("=" * 70)
+            logger.warning(f"⚠️  No curriculum_structure found for project {project_id}")
+            logger.warning("   Skipping incremental generation.")
+            logger.warning("=" * 70)
             return
 
         # Load concept_status_map from concepts table
@@ -397,36 +429,63 @@ async def run_incremental_concept_generation(project_id: str):
         max_iterations = 10  # Safety limit
         iteration = 0
 
+        logger.info("🔄 Starting incremental generation loop...")
+        logger.info(f"   Max iterations: {max_iterations}")
+
         while iteration < max_iterations:
             iteration += 1
+            logger.info(f"🔄 Incremental generation iteration {iteration}/{max_iterations}")
 
             # Check if we should continue
-            if should_continue_after_concept(initial_state) == "end":
+            should_continue = should_continue_after_concept(initial_state)
+            logger.debug(f"   Should continue: {should_continue}")
+
+            if should_continue == "end":
                 logger.info("⏸️  Generation window full or complete. Stopping.")
                 break
 
             # Build memory context
+            logger.info(f"   📚 Building memory context (iteration {iteration})...")
             initial_state = await build_memory_context(initial_state)
+            logger.info("   ✅ Memory context built")
 
             # Generate concept content
+            logger.info(f"   ✨ Generating concept content (iteration {iteration})...")
             initial_state = await generate_concept_content(initial_state)
+            logger.info("   ✅ Concept content generated")
 
             # Mark concept complete
+            logger.info(f"   💾 Marking concept complete (iteration {iteration})...")
             initial_state = mark_concept_complete(initial_state)
+            logger.info("   ✅ Concept marked complete")
 
             if initial_state.get("error"):
-                logger.error(f"❌ Error in incremental generation: {initial_state['error']}")
+                logger.error("=" * 70)
+                logger.error(f"❌ Error in incremental generation iteration {iteration}")
+                logger.error(f"   ⚠️  Error: {initial_state['error']}")
+                logger.error("=" * 70)
                 break
 
-        logger.info(
-            f"✅ Incremental generation completed for project_id={project_id} (iterations: {iteration})"
-        )
+        logger.info("=" * 70)
+        logger.info("✅ INCREMENTAL GENERATION COMPLETED")
+        logger.info(f"   📦 Project ID: {project_id}")
+        logger.info(f"   🔄 Iterations: {iteration}/{max_iterations}")
+        logger.info("=" * 70)
 
         if initial_state.get("error"):
-            logger.error(f"❌ Incremental generation failed: {initial_state['error']}")
+            logger.error("=" * 70)
+            logger.error("❌ INCREMENTAL GENERATION FAILED")
+            logger.error(f"   📦 Project ID: {project_id}")
+            logger.error(f"   ⚠️  Error: {initial_state['error']}")
+            logger.error("=" * 70)
 
     except Exception as e:
-        logger.error(f"❌ Error in incremental concept generation: {e}", exc_info=True)
+        logger.error("=" * 70)
+        logger.error("❌ CRITICAL ERROR IN INCREMENTAL CONCEPT GENERATION")
+        logger.error(f"   📦 Project ID: {project_id}")
+        logger.error(f"   ⚠️  Error Type: {type(e).__name__}")
+        logger.error(f"   ⚠️  Error Message: {str(e)}")
+        logger.error("=" * 70, exc_info=True)
         # Don't raise - this is a background task
 
 

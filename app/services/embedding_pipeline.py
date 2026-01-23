@@ -219,11 +219,14 @@ async def run_embedding_pipeline(
         logger.info("✅ Step 7/7: Project status updated to 'ready'")
 
         # Step 8: Trigger roadmap generation via roadmap service (background task)
+        logger.info("=" * 70)
         logger.info(f"📚 Step 8/8: Triggering roadmap generation for project_id={project_id}")
+        logger.info("=" * 70)
         try:
             from app.services.roadmap_client import call_roadmap_service_generate
 
             # Get project data for roadmap generation
+            logger.info(f"📊 Fetching project data for roadmap generation: project_id={project_id}")
             project_response = (
                 supabase.table("projects")
                 .select("github_url, skill_level, target_days")
@@ -233,21 +236,83 @@ async def run_embedding_pipeline(
 
             if project_response.data:
                 project_data = project_response.data[0]
+                github_url = project_data["github_url"]
+                skill_level = project_data["skill_level"]
+                target_days = project_data["target_days"]
+
+                logger.info("✅ Project data retrieved:")
+                logger.info(f"   🔗 GitHub URL: {github_url}")
+                logger.info(f"   📊 Skill Level: {skill_level}")
+                logger.info(f"   📅 Target Days: {target_days}")
+
                 # Schedule roadmap generation via HTTP call to roadmap service (non-blocking)
                 # This delegates all LangGraph workflows to the roadmap Cloud Run service
-                asyncio.create_task(
-                    call_roadmap_service_generate(
-                        project_id=str(project_id),
-                        github_url=project_data["github_url"],
-                        skill_level=project_data["skill_level"],
-                        target_days=project_data["target_days"],
-                    )
+                # Check configuration before making call
+                from app.config import settings as app_settings
+
+                if not app_settings.roadmap_service_url:
+                    logger.error("=" * 70)
+                    logger.error("❌ ROADMAP_SERVICE_URL NOT CONFIGURED!")
+                    logger.error("   Cannot trigger roadmap generation.")
+                    logger.error("   Please set ROADMAP_SERVICE_URL environment variable.")
+                    logger.error("=" * 70)
+                    raise ValueError("ROADMAP_SERVICE_URL not configured")
+
+                if not app_settings.internal_auth_token:
+                    logger.error("=" * 70)
+                    logger.error("❌ INTERNAL_AUTH_TOKEN NOT CONFIGURED!")
+                    logger.error("   Cannot trigger roadmap generation.")
+                    logger.error("   Please set INTERNAL_AUTH_TOKEN environment variable.")
+                    logger.error("=" * 70)
+                    raise ValueError("INTERNAL_AUTH_TOKEN not configured")
+
+                logger.info("📞 Scheduling HTTP call to roadmap service...")
+                logger.info(f"   🌐 Service URL: {app_settings.roadmap_service_url}")
+                logger.info(
+                    f"   🔗 Endpoint: {app_settings.roadmap_service_url}/api/roadmap/generate-internal"
+                )
+                logger.info(
+                    f"   🔐 Auth Token: {'✓ Configured' if app_settings.internal_auth_token else '✗ Missing'}"
+                )
+
+                # Create the async task and add a callback to log completion/errors
+                async def call_with_logging():
+                    try:
+                        logger.info("🚀 Starting HTTP call to roadmap service...")
+                        result = await call_roadmap_service_generate(
+                            project_id=str(project_id),
+                            github_url=github_url,
+                            skill_level=skill_level,
+                            target_days=target_days,
+                        )
+                        logger.info(f"✅ Roadmap service HTTP call completed: {result}")
+                        return result
+                    except Exception as e:
+                        logger.error(f"❌ Roadmap service HTTP call failed: {e}", exc_info=True)
+                        raise
+
+                task = asyncio.create_task(call_with_logging())
+                logger.info("✅ Async task created for roadmap generation")
+                logger.info(f"   Task object: {task}")
+                logger.info(f"   Task done: {task.done()}")
+                logger.info(
+                    "   ⚠️  Task will run in background - check roadmap service logs for progress"
                 )
                 logger.info("✅ Step 8/8: Roadmap generation scheduled via roadmap service")
+                logger.info("=" * 70)
             else:
-                logger.warning("⚠️  Could not find project data for roadmap generation")
+                logger.error("=" * 70)
+                logger.error("⚠️  Could not find project data for roadmap generation")
+                logger.error(f"   📦 Project ID: {project_id}")
+                logger.error(f"   📊 Response: {project_response}")
+                logger.error("=" * 70)
         except Exception as roadmap_error:
-            logger.error(f"❌ Failed to trigger roadmap generation: {roadmap_error}", exc_info=True)
+            logger.error("=" * 70)
+            logger.error("❌ FAILED TO TRIGGER ROADMAP GENERATION")
+            logger.error(f"   📦 Project ID: {project_id}")
+            logger.error(f"   ⚠️  Error Type: {type(roadmap_error).__name__}")
+            logger.error(f"   ⚠️  Error Message: {str(roadmap_error)}")
+            logger.error("=" * 70, exc_info=True)
             # Don't fail the embedding pipeline if roadmap generation fails
 
         total_duration = time.time() - pipeline_start_time

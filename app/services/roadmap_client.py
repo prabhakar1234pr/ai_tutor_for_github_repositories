@@ -48,22 +48,56 @@ async def call_roadmap_service_incremental(project_id: str) -> dict:
     }
     payload = {"project_id": project_id}
 
-    logger.info(f"📞 Calling roadmap service for incremental generation: project_id={project_id}")
+    logger.info("=" * 70)
+    logger.info("📞 CALLING ROADMAP SERVICE FOR INCREMENTAL GENERATION")
+    logger.info("=" * 70)
+    logger.info(f"   📦 Project ID: {project_id}")
+    logger.info(f"   🌐 Service URL: {url}")
+    logger.info(
+        f"   🕐 Timestamp: {__import__('datetime').datetime.now(__import__('datetime').UTC).isoformat()}"
+    )
+    logger.info("=" * 70)
 
     try:
+        logger.info(f"📡 Making HTTP POST request to: {url}")
+        logger.debug(f"   Headers: {dict(headers)}")
+        logger.debug(f"   Payload: {payload}")
+
         async with httpx.AsyncClient(timeout=300.0) as client:
+            logger.info("⏳ Waiting for roadmap service response...")
             response = await client.post(url, json=payload, headers=headers)
+            logger.info(f"📥 Received response: Status {response.status_code}")
+
             response.raise_for_status()
 
             result = response.json()
-            logger.info(f"✅ Roadmap service responded: {result.get('message', 'success')}")
+            logger.info("=" * 70)
+            logger.info("✅ ROADMAP SERVICE RESPONDED SUCCESSFULLY")
+            logger.info(f"   📦 Project ID: {project_id}")
+            logger.info(f"   ✅ Message: {result.get('message', 'success')}")
+            logger.info("=" * 70)
             return result
 
     except httpx.HTTPError as e:
-        logger.error(f"❌ HTTP error calling roadmap service: {e}", exc_info=True)
+        logger.error("=" * 70)
+        logger.error("❌ HTTP ERROR CALLING ROADMAP SERVICE (INCREMENTAL)")
+        logger.error(f"   📦 Project ID: {project_id}")
+        logger.error(f"   🌐 URL: {url}")
+        logger.error(f"   ⚠️  Error Type: {type(e).__name__}")
+        logger.error(f"   ⚠️  Error Message: {str(e)}")
+        if hasattr(e, "response") and e.response is not None:
+            logger.error(f"   📥 Response Status: {e.response.status_code}")
+            logger.error(f"   📥 Response Body: {e.response.text[:500]}")
+        logger.error("=" * 70, exc_info=True)
         raise
     except Exception as e:
-        logger.error(f"❌ Unexpected error calling roadmap service: {e}", exc_info=True)
+        logger.error("=" * 70)
+        logger.error("❌ UNEXPECTED ERROR CALLING ROADMAP SERVICE (INCREMENTAL)")
+        logger.error(f"   📦 Project ID: {project_id}")
+        logger.error(f"   🌐 URL: {url}")
+        logger.error(f"   ⚠️  Error Type: {type(e).__name__}")
+        logger.error(f"   ⚠️  Error Message: {str(e)}")
+        logger.error("=" * 70, exc_info=True)
         raise
 
 
@@ -113,18 +147,38 @@ async def call_roadmap_service_generate(
         "target_days": target_days,
     }
 
+    logger.info("=" * 70)
+    logger.info("📞 CALLING ROADMAP SERVICE FOR FULL GENERATION")
+    logger.info("=" * 70)
+    logger.info(f"   📦 Project ID: {project_id}")
+    logger.info(f"   🔗 GitHub URL: {github_url}")
+    logger.info(f"   📊 Skill Level: {skill_level}")
+    logger.info(f"   📅 Target Days: {target_days}")
+    logger.info(f"   🌐 Service URL: {url}")
     logger.info(
-        f"📞 Calling roadmap service for full generation: "
-        f"project_id={project_id}, skill_level={skill_level}, target_days={target_days}"
+        f"   🕐 Timestamp: {__import__('datetime').datetime.now(__import__('datetime').UTC).isoformat()}"
     )
+    logger.info("=" * 70)
 
     try:
+        logger.info(f"📡 Making HTTP POST request to: {url}")
+        logger.debug(f"   Headers: {dict(headers)}")
+        logger.debug(f"   Payload: {payload}")
+
         async with httpx.AsyncClient(timeout=300.0) as client:
+            logger.info("⏳ Waiting for roadmap service response...")
             response = await client.post(url, json=payload, headers=headers)
+            logger.info(f"📥 Received response: Status {response.status_code}")
+
             response.raise_for_status()
 
             result = response.json()
-            logger.info(f"✅ Roadmap service responded: {result.get('message', 'success')}")
+            logger.info("=" * 70)
+            logger.info("✅ ROADMAP SERVICE RESPONDED SUCCESSFULLY")
+            logger.info(f"   📦 Project ID: {project_id}")
+            logger.info(f"   ✅ Message: {result.get('message', 'success')}")
+            logger.info(f"   📊 Response: {result}")
+            logger.info("=" * 70)
             return result
 
     except httpx.HTTPError as e:
