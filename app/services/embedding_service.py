@@ -1,11 +1,20 @@
+"""
+Embedding Service with support for multiple providers:
+- Vertex AI (Google Cloud) - Recommended for GCP deployments
+- OpenAI - Cost-effective API option
+- Hugging Face - With API token support
+- Local - Self-hosted sentence-transformers
+"""
+
 import logging
+import os
 import time
 from typing import TYPE_CHECKING
 
 from app.config import settings
 
 if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -17,83 +26,223 @@ def get_embedding_service() -> "EmbeddingService":
     """
     Get or create singleton EmbeddingService instance (lazy initialization).
 
-    The model is loaded only on first use, then reused for all subsequent requests.
-    This saves 3-4 seconds per request after the first one.
-
     Returns:
-        EmbeddingService: Singleton instance with loaded model
+        EmbeddingService: Singleton instance with loaded model/provider
     """
     global _embedding_service_instance
 
     if _embedding_service_instance is None:
-        # Lazy import - only import when actually needed (avoids slow TensorFlow init on startup)
-        from sentence_transformers import SentenceTransformer
-
-        logger.info("🤖 Loading embedding model (first use - this may take a few seconds)...")
-        logger.info(f"   Model: {settings.embedding_model_name}")
-        model = SentenceTransformer(settings.embedding_model_name)
-        _embedding_service_instance = EmbeddingService(model)
-        logger.info("✅ EmbeddingService ready (will reuse for future requests)")
+        _embedding_service_instance = EmbeddingService()
+        logger.info("✅ EmbeddingService ready")
 
     return _embedding_service_instance
 
 
 class EmbeddingService:
-    def __init__(self, model: "SentenceTransformer" = None):
-        """
-        Initialize EmbeddingService with a pre-loaded model.
+    """
+    Embedding service supporting multiple providers:
+    - vertex_ai: Google Vertex AI embeddings (best for GCP deployments)
+    - openai: OpenAI embeddings (cost-effective: $0.02/1M tokens)
+    - huggingface: Hugging Face with API token (avoids rate limits)
+    - local: Self-hosted sentence-transformers (no API costs)
+    """
 
-        Args:
-            model: Pre-loaded SentenceTransformer model. If None, loads the model (for testing).
-        """
-        if model is None:
-            # Lazy import - only import when actually needed
+    def __init__(self):
+        """Initialize EmbeddingService based on configured provider."""
+        self.provider = settings.embedding_provider.lower()
+        self.model = None
+        self._vertex_ai_client = None
+        self._openai_client = None
+
+        logger.info(f"🤖 Initializing EmbeddingService with provider: {self.provider}")
+
+        if self.provider == "vertex_ai":
+            self._init_vertex_ai()
+        elif self.provider == "openai":
+            self._init_openai()
+        elif self.provider == "huggingface":
+            self._init_huggingface()
+        elif self.provider == "local":
+            self._init_local()
+        else:
+            raise ValueError(
+                f"Unknown embedding provider: {self.provider}. "
+                "Supported: vertex_ai, openai, huggingface, local"
+            )
+
+    def _init_vertex_ai(self):
+        """Initialize Vertex AI embeddings (recommended for GCP)."""
+        try:
+            import vertexai
+            from vertexai.language_models import TextEmbeddingModel
+
+            if not settings.gcp_project_id:
+                raise ValueError(
+                    "GCP_PROJECT_ID is required for Vertex AI embeddings. Set it in your .env file."
+                )
+
+            # Initialize Vertex AI
+            vertexai.init(project=settings.gcp_project_id, location=settings.gcp_location)
+            self._vertex_ai_client = TextEmbeddingModel.from_pretrained(
+                settings.embedding_model_name
+            )
+            logger.info(f"✅ Vertex AI embeddings initialized: {settings.embedding_model_name}")
+        except ImportError as e:
+            raise ImportError(
+                "google-cloud-aiplatform is required for Vertex AI embeddings. "
+                "Install it: pip install google-cloud-aiplatform"
+            ) from e
+        except Exception as e:
+            logger.error(f"Failed to initialize Vertex AI: {e}")
+            raise
+
+    def _init_openai(self):
+        """Initialize OpenAI embeddings."""
+        try:
+            from openai import OpenAI
+
+            api_key = settings.openai_api_key
+            if not api_key:
+                raise ValueError(
+                    "OPENAI_API_KEY is required for OpenAI embeddings. Set it in your .env file."
+                )
+
+            self._openai_client = OpenAI(api_key=api_key)
+            logger.info(f"✅ OpenAI embeddings initialized: {settings.openai_embedding_model}")
+        except ImportError as e:
+            raise ImportError(
+                "openai package is required for OpenAI embeddings. Install it: pip install openai"
+            ) from e
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI: {e}")
+            raise
+
+    def _init_huggingface(self):
+        """Initialize Hugging Face embeddings with API token."""
+        try:
             from sentence_transformers import SentenceTransformer
 
-            # Allow direct instantiation for testing purposes
-            logger.info(
-                f"🤖 Initializing EmbeddingService with model: {settings.embedding_model_name}"
+            # Set HF token if provided
+            if settings.huggingface_token:
+                os.environ["HF_TOKEN"] = settings.huggingface_token
+                logger.info("✅ Using Hugging Face API token")
+
+            model_name = (
+                settings.embedding_model_name
+                if settings.embedding_model_name.startswith("sentence-transformers/")
+                else f"sentence-transformers/{settings.embedding_model_name}"
             )
-            self.model = SentenceTransformer(settings.embedding_model_name)
-            logger.info("✅ EmbeddingService initialized successfully")
-        else:
-            # Use provided model (singleton pattern)
-            self.model = model
+
+            logger.info(f"Loading Hugging Face model: {model_name}")
+            self.model = SentenceTransformer(model_name)
+            logger.info(f"✅ Hugging Face embeddings initialized: {model_name}")
+        except ImportError as e:
+            raise ImportError(
+                "sentence-transformers is required for Hugging Face embeddings. "
+                "Install it: pip install sentence-transformers"
+            ) from e
+        except Exception as e:
+            logger.error(f"Failed to initialize Hugging Face: {e}")
+            raise
+
+    def _init_local(self):
+        """Initialize local sentence-transformers model."""
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            model_name = (
+                settings.embedding_model_name
+                if settings.embedding_model_name.startswith("sentence-transformers/")
+                else f"sentence-transformers/{settings.embedding_model_name}"
+            )
+
+            logger.info(f"Loading local model: {model_name}")
+            self.model = SentenceTransformer(model_name)
+            logger.info(f"✅ Local embeddings initialized: {model_name}")
+        except ImportError as e:
+            raise ImportError(
+                "sentence-transformers is required for local embeddings. "
+                "Install it: pip install sentence-transformers"
+            ) from e
+        except Exception as e:
+            logger.error(f"Failed to initialize local model: {e}")
+            raise
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """
         Generate embeddings for a list of texts.
+
+        Args:
+            texts: List of text strings to embed
+
+        Returns:
+            List of embedding vectors (each is a list of floats)
         """
         if not texts:
             logger.warning("⚠️  No texts provided for embedding generation")
             return []
 
-        logger.info(f"🧮 Generating embeddings for {len(texts)} texts")
-        logger.debug(f"   Model: {settings.embedding_model_name}")
-        logger.debug("   Batch size: 32")
-        logger.debug("   Normalize embeddings: True")
-
+        logger.info(f"🧮 Generating embeddings for {len(texts)} texts using {self.provider}")
         start_time = time.time()
 
         # Calculate total text size
         total_chars = sum(len(text) for text in texts)
         logger.debug(f"   Total characters: {total_chars:,}")
 
+        try:
+            if self.provider == "vertex_ai":
+                embeddings = self._embed_vertex_ai(texts)
+            elif self.provider == "openai":
+                embeddings = self._embed_openai(texts)
+            elif self.provider in ("huggingface", "local"):
+                embeddings = self._embed_local(texts)
+            else:
+                raise ValueError(f"Unknown provider: {self.provider}")
+
+            duration = time.time() - start_time
+            embedding_dim = len(embeddings[0]) if len(embeddings) > 0 else 0
+
+            logger.info(
+                f"✅ Generated {len(embeddings)} embeddings (dim={embedding_dim}) in {duration:.2f}s"
+            )
+            if duration > 0:
+                logger.debug(f"   Generation rate: {len(embeddings) / duration:.1f} embeddings/sec")
+                logger.debug(f"   Throughput: {total_chars / duration / 1000:.1f}K chars/sec")
+
+            return embeddings
+
+        except Exception as e:
+            logger.error(f"Failed to generate embeddings: {e}", exc_info=True)
+            raise
+
+    def _embed_vertex_ai(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings using Vertex AI."""
+        embeddings = self._vertex_ai_client.get_embeddings(texts)
+        # Vertex AI returns list of EmbeddingValue objects
+        return [emb.values for emb in embeddings]
+
+    def _embed_openai(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings using OpenAI API."""
+        # OpenAI API supports batching, but we'll process in chunks to avoid token limits
+        batch_size = 100  # OpenAI recommends batching
+        all_embeddings = []
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            response = self._openai_client.embeddings.create(
+                model=settings.openai_embedding_model, input=batch
+            )
+            batch_embeddings = [item.embedding for item in response.data]
+            all_embeddings.extend(batch_embeddings)
+
+        return all_embeddings
+
+    def _embed_local(self, texts: list[str]) -> list[list[float]]:
+        """Generate embeddings using local sentence-transformers model."""
         embeddings = self.model.encode(
             texts,
             batch_size=32,
             show_progress_bar=False,
             normalize_embeddings=True,
         )
-
-        duration = time.time() - start_time
-        embedding_dim = len(embeddings[0]) if len(embeddings) > 0 else 0
-
-        logger.info(
-            f"✅ Generated {len(embeddings)} embeddings (dim={embedding_dim}) in {duration:.2f}s"
-        )
-        if duration > 0:
-            logger.debug(f"   Generation rate: {len(embeddings) / duration:.1f} embeddings/sec")
-            logger.debug(f"   Throughput: {total_chars / duration / 1000:.1f}K chars/sec")
-
         return embeddings.tolist()

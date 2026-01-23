@@ -68,7 +68,11 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
 
     # Embedding Settings
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_provider: str = "vertex_ai"  # Options: "vertex_ai", "openai", "huggingface", "local"
+    embedding_model_name: str = "textembedding-gecko@003"  # Vertex AI model name
+    openai_embedding_model: str = "text-embedding-3-small"  # OpenAI model name
+    openai_api_key: str | None = None  # Maps to OPENAI_API_KEY (for embeddings)
+    huggingface_token: str | None = None  # Maps to HUGGINGFACE_TOKEN (for API access)
     chunk_size: int = 1000  # tokens per chunk
     chunk_overlap: int = 200  # overlap between chunks
     max_files_per_project: int = 500  # maximum files to process per project
