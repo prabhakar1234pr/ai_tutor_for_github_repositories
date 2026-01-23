@@ -171,15 +171,30 @@ async def get_workspace_by_project(
     Get workspace for a specific project.
     """
     try:
+        logger.debug(f"[API_GET_WORKSPACE_BY_PROJECT] Request for project: {project_id}")
         clerk_user_id = user_info["clerk_user_id"]
+        logger.debug(f"[API_GET_WORKSPACE_BY_PROJECT] Clerk user ID: {clerk_user_id}")
+
         user_id = get_user_id_from_clerk(supabase, clerk_user_id)
+        logger.debug(f"[API_GET_WORKSPACE_BY_PROJECT] Supabase user ID: {user_id}")
 
         manager = get_workspace_manager()
+        logger.debug("[API_GET_WORKSPACE_BY_PROJECT] Workspace manager initialized")
+
         workspace = manager.get_workspace_by_user_project(user_id, project_id)
+        logger.debug(
+            f"[API_GET_WORKSPACE_BY_PROJECT] Workspace lookup result: {workspace is not None}"
+        )
 
         if not workspace:
+            logger.info(
+                f"[API_GET_WORKSPACE_BY_PROJECT] No workspace found for project {project_id}"
+            )
             raise HTTPException(status_code=404, detail="No workspace found for this project")
 
+        logger.debug(
+            f"[API_GET_WORKSPACE_BY_PROJECT] Returning workspace: {workspace.workspace_id}"
+        )
         return {
             "success": True,
             "workspace": _workspace_to_response(workspace),
@@ -188,7 +203,7 @@ async def get_workspace_by_project(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching workspace: {e}", exc_info=True)
+        logger.error(f"[API_GET_WORKSPACE_BY_PROJECT] Error fetching workspace: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch workspace: {str(e)}") from e
 
 

@@ -31,6 +31,7 @@ async def lifespan(_app: FastAPI):
     logger.info(f"   Environment: {settings.environment}")
     logger.info(f"   Host: {settings.host}")
     logger.info(f"   Port: {settings.port}")
+    logger.info(f"   CORS Origins: {settings.cors_origins}")
     logger.info("=" * 60)
 
     # Initialize services (Docker client, etc.)
@@ -59,9 +60,23 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+# Ensure production frontend domain is always allowed
+cors_origins = settings.cors_origins
+if isinstance(cors_origins, list):
+    # If it's a list, ensure https://gitguide.dev is included
+    if "*" not in cors_origins and "https://gitguide.dev" not in cors_origins:
+        cors_origins = cors_origins + ["https://gitguide.dev"]
+elif cors_origins != "*":
+    # If it's a string and not "*", ensure https://gitguide.dev is included
+    cors_origins = ["https://gitguide.dev"] + (
+        [cors_origins] if isinstance(cors_origins, str) else cors_origins
+    )
+
+logger.info(f"CORS Origins configured: {cors_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
