@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 
@@ -85,7 +86,9 @@ async def run_embedding_pipeline(
         # Step 3: chunk files
         logger.info(f"✂️  Step 3/7: Chunking {len(files)} files into text chunks")
         chunk_start = time.time()
-        chunks = chunk_files(project_id=project_id, files=files)
+        # Run chunking in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        chunks = await loop.run_in_executor(None, chunk_files, project_id, files)
         chunk_duration = time.time() - chunk_start
         total_tokens = sum(c["token_count"] for c in chunks)
 
@@ -111,7 +114,9 @@ async def run_embedding_pipeline(
         # Step 4: store chunks in Supabase
         logger.info(f"💾 Step 4/7: Storing {len(chunks)} chunks in Supabase")
         store_start = time.time()
-        chunk_ids = store_chunks(project_id, chunks)
+        # Run storage in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        chunk_ids = await loop.run_in_executor(None, store_chunks, project_id, chunks)
         store_duration = time.time() - store_start
 
         # Calculate cumulative time
@@ -141,7 +146,10 @@ async def run_embedding_pipeline(
         logger.info(f"🧮 Step 5/7: Generating embeddings for {len(chunks)} chunks")
         embed_start = time.time()
         texts = [c["content"] for c in chunks]
-        embeddings = embedding_service.embed_texts(texts)
+        # Run embedding generation in thread pool to avoid blocking event loop
+        # This allows other requests to be processed concurrently
+        loop = asyncio.get_event_loop()
+        embeddings = await loop.run_in_executor(None, embedding_service.embed_texts, texts)
         embed_duration = time.time() - embed_start
 
         # Calculate cumulative time
@@ -167,11 +175,15 @@ async def run_embedding_pipeline(
         logger.info(f"🔍 Step 6/7: Upserting {len(embeddings)} embeddings into Qdrant")
         metadatas = [{"file_path": c["file_path"], "language": c["language"]} for c in chunks]
         qdrant_start = time.time()
-        qdrant_service.upsert_embeddings(
-            project_id=project_id,
-            chunk_ids=chunk_ids,
-            embeddings=embeddings,
-            metadatas=metadatas,
+        # Run Qdrant upsert in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            qdrant_service.upsert_embeddings,
+            project_id,
+            chunk_ids,
+            embeddings,
+            metadatas,
         )
         qdrant_duration = time.time() - qdrant_start
 
@@ -218,8 +230,6 @@ async def run_embedding_pipeline(
             if project_response.data:
                 project_data = project_response.data[0]
                 # Schedule roadmap generation as background task (non-blocking)
-                import asyncio
-
                 asyncio.create_task(
                     run_roadmap_generation(
                         project_id=str(project_id),
