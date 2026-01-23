@@ -31,18 +31,24 @@ class DockerClient:
     _lock = threading.Lock()
 
     def __init__(self):
-        """Initialize Docker client - verify connection is available."""
-        try:
-            client = docker.from_env()
-            client.ping()
-            logger.info("Docker client initialized - connection verified")
-        except Exception as e:
-            logger.error(f"Failed to connect to Docker: {e}")
-            raise RuntimeError(f"Docker is not available: {e}") from e
+        """Initialize Docker client - connection check is deferred until first use."""
+        self._docker_available: bool | None = None
+        logger.debug("Docker client initialized (lazy connection check)")
 
     def _get_client(self) -> docker.DockerClient:
         """Get a fresh Docker client for thread-safe operations."""
-        return docker.from_env()
+        try:
+            client = docker.from_env()
+            # Verify connection on first use
+            if self._docker_available is None:
+                client.ping()
+                self._docker_available = True
+                logger.info("Docker client connection verified")
+            return client
+        except Exception as e:
+            self._docker_available = False
+            logger.error(f"Failed to connect to Docker: {e}")
+            raise RuntimeError(f"Docker is not available: {e}") from e
 
     def create_container(
         self,
@@ -344,11 +350,15 @@ class DockerClient:
 
     def is_docker_available(self) -> bool:
         """Check if Docker daemon is available."""
+        if self._docker_available is not None:
+            return self._docker_available
         try:
-            client = self._get_client()
+            client = docker.from_env()
             client.ping()
+            self._docker_available = True
             return True
         except Exception:
+            self._docker_available = False
             return False
 
     def create_volume(self, volume_name: str) -> bool:
