@@ -69,7 +69,7 @@ class Settings(BaseSettings):
 
     # Embedding Settings
     embedding_provider: str = "vertex_ai"  # Options: "vertex_ai", "openai", "huggingface", "local"
-    embedding_model_name: str = "textembedding-gecko@003"  # Vertex AI model name
+    embedding_model_name: str = "gemini-embedding-001"  # Vertex AI model name
     openai_embedding_model: str = "text-embedding-3-small"  # OpenAI model name
     openai_api_key: str | None = None  # Maps to OPENAI_API_KEY (for embeddings)
     huggingface_token: str | None = None  # Maps to HUGGINGFACE_TOKEN (for API access)
