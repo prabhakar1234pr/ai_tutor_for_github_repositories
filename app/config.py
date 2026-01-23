@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
+    # Roadmap Service (for service-to-service communication)
+    roadmap_service_url: str | None = (
+        None  # Maps to ROADMAP_SERVICE_URL (e.g., https://gitguide-roadmap-xxx.run.app)
+    )
+    internal_auth_token: str | None = (
+        None  # Maps to INTERNAL_AUTH_TOKEN (shared secret for service-to-service calls)
+    )
+
     model_config = ConfigDict(
         # Look for .env in project root (ai_tutor_for_github_repositories/)
         env_file=str(PROJECT_ROOT / ".env"),

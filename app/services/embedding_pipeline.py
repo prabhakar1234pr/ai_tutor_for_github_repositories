@@ -218,10 +218,10 @@ async def run_embedding_pipeline(
         ).execute()
         logger.info("✅ Step 7/7: Project status updated to 'ready'")
 
-        # Step 8: Trigger roadmap generation (background task)
+        # Step 8: Trigger roadmap generation via roadmap service (background task)
         logger.info(f"📚 Step 8/8: Triggering roadmap generation for project_id={project_id}")
         try:
-            from app.services.roadmap_generation import run_roadmap_generation
+            from app.services.roadmap_client import call_roadmap_service_generate
 
             # Get project data for roadmap generation
             project_response = (
@@ -233,16 +233,17 @@ async def run_embedding_pipeline(
 
             if project_response.data:
                 project_data = project_response.data[0]
-                # Schedule roadmap generation as background task (non-blocking)
+                # Schedule roadmap generation via HTTP call to roadmap service (non-blocking)
+                # This delegates all LangGraph workflows to the roadmap Cloud Run service
                 asyncio.create_task(
-                    run_roadmap_generation(
+                    call_roadmap_service_generate(
                         project_id=str(project_id),
                         github_url=project_data["github_url"],
                         skill_level=project_data["skill_level"],
                         target_days=project_data["target_days"],
                     )
                 )
-                logger.info("✅ Step 8/8: Roadmap generation scheduled as background task")
+                logger.info("✅ Step 8/8: Roadmap generation scheduled via roadmap service")
             else:
                 logger.warning("⚠️  Could not find project data for roadmap generation")
         except Exception as roadmap_error:

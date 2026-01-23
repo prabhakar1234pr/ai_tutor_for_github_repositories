@@ -6,7 +6,57 @@ import logging
 import re
 from typing import Any
 
+import httpx
+
 logger = logging.getLogger(__name__)
+
+
+def _extract_sha_from_input(url_or_sha: str) -> str:
+    """
+    Extract commit SHA from either a full GitHub commit URL or a raw SHA string.
+    """
+    if url_or_sha.startswith("http"):
+        return url_or_sha.rstrip("/").split("/")[-1]
+    return url_or_sha
+
+
+async def _get_latest_commit_sha(repo_url: str) -> str | None:
+    """
+    Fetch the latest commit SHA from a GitHub repository using the public API.
+
+    This does NOT require authentication and works for public repositories.
+    """
+    try:
+        match = re.search(r"github\.com/([^/]+)/([^/]+)", repo_url)
+        if not match:
+            return None
+
+        owner = match.group(1)
+        repo = match.group(2).replace(".git", "")
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"https://api.github.com/repos/{owner}/{repo}/commits?per_page=1",
+                headers={"Accept": "application/vnd.github.v3+json"},
+            )
+
+        if response.status_code != 200:
+            logger.warning(
+                "GitHub commits API returned status %s for %s/%s",
+                response.status_code,
+                owner,
+                repo,
+            )
+            return None
+
+        data = response.json()
+        if isinstance(data, list) and data:
+            return data[0].get("sha")
+
+        return None
+    except Exception as e:
+        logger.error(f"Error fetching latest commit from GitHub: {e}", exc_info=True)
+        return None
 
 
 def validate_github_profile_url(url: str) -> bool:
@@ -89,6 +139,24 @@ async def validate_task_completion(
                 return False, "Commit URL or SHA is required"
             if not validate_github_commit_url(url_or_sha):
                 return False, "Invalid commit URL or SHA format"
+
+            # If we know the user's repository, ensure they submitted the LATEST commit.
+            repo_url = (project_data or {}).get("user_repo_url") if project_data else None
+            if repo_url:
+                latest_sha = await _get_latest_commit_sha(repo_url)
+                if not latest_sha:
+                    return (
+                        False,
+                        "Could not verify latest commit from GitHub. Please try again in a moment.",
+                    )
+
+                input_sha = _extract_sha_from_input(url_or_sha)
+                if input_sha.lower() != latest_sha.lower():
+                    return (
+                        False,
+                        "Please enter the latest commit from your repository (the most recent commit on the default branch).",
+                    )
+
             return True, None
 
         elif task_type == "github_connect":

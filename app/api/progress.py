@@ -16,6 +16,7 @@ from supabase import Client
 
 from app.core.supabase_client import execute_with_retry, get_supabase_client
 from app.services.roadmap_generation import trigger_incremental_generation_sync
+from app.services.task_validation import validate_task_completion
 from app.utils.clerk_auth import verify_clerk_token
 
 router = APIRouter()
@@ -826,6 +827,37 @@ async def complete_task(
         )
         if not day_response.data or day_response.data[0]["project_id"] != project_id:
             raise HTTPException(status_code=404, detail="Task not found in project")
+
+        # For Day 0 Task 3 (verify_commit), validate that the provided commit
+        # is actually the latest commit on the user's repository. This prevents
+        # users from submitting an old commit that will later be rejected in the
+        # GitHub consent step.
+        if task_type == "verify_commit":
+            if not request or not request.commit_sha:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Commit SHA is required to complete this task.",
+                )
+
+            project_response = (
+                supabase.table("projects")
+                .select("project_id, user_id, user_repo_url")
+                .eq("project_id", project_id)
+                .eq("user_id", user_id)
+                .execute()
+            )
+            if not project_response.data:
+                raise HTTPException(status_code=404, detail="Project not found")
+
+            project_data = project_response.data[0]
+
+            is_valid, error_message = await validate_task_completion(
+                task_type,
+                {"sha": request.commit_sha},
+                project_data=project_data,
+            )
+            if not is_valid:
+                raise HTTPException(status_code=400, detail=error_message or "Invalid commit")
 
         now = datetime.now(UTC).isoformat()
 
