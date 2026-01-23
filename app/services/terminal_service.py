@@ -192,6 +192,58 @@ class TerminalService:
         try:
             client = docker.from_env()
 
+            # Check if exec is still valid and not already running
+            try:
+                exec_info = client.api.exec_inspect(session.exec_id)
+                if exec_info.get("Running", False):
+                    logger.warning(
+                        f"Exec {session.exec_id[:12]} is already running for session {session_id}. "
+                        "Creating new session."
+                    )
+                    # Create a new session with a fresh exec
+                    new_session = self.create_session(
+                        workspace_id=session.workspace_id,
+                        container_id=container_id,
+                        name=session.name,
+                    )
+                    # Update session_id to use the new one
+                    session = new_session
+                    logger.info(
+                        f"Created new terminal session {new_session.session_id} to replace stale exec"
+                    )
+            except NotFound:
+                logger.warning(
+                    f"Exec {session.exec_id[:12]} not found for session {session_id}. Creating new session."
+                )
+                # Exec was deleted, create a new session
+                new_session = self.create_session(
+                    workspace_id=session.workspace_id,
+                    container_id=container_id,
+                    name=session.name,
+                )
+                session = new_session
+                logger.info(
+                    f"Created new terminal session {new_session.session_id} to replace missing exec"
+                )
+            except APIError as e:
+                error_msg = str(e).lower()
+                if "already running" in error_msg or "is running" in error_msg:
+                    logger.warning(
+                        f"Exec {session.exec_id[:12]} is already running. Creating new session."
+                    )
+                    # Create a new session with a fresh exec
+                    new_session = self.create_session(
+                        workspace_id=session.workspace_id,
+                        container_id=container_id,
+                        name=session.name,
+                    )
+                    session = new_session
+                    logger.info(
+                        f"Created new terminal session {new_session.session_id} to replace running exec"
+                    )
+                else:
+                    raise
+
             # Start exec with socket connection
             socket = client.api.exec_start(
                 session.exec_id,
