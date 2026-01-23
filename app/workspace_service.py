@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.files import router as files_router
 from app.api.git import router as git_router
 from app.api.preview import router as preview_router
+from app.api.task_sessions import router as task_sessions_router
 from app.api.terminal import router as terminal_router
 from app.api.workspaces import router as workspaces_router
 from app.config import settings
@@ -88,6 +89,7 @@ app.include_router(files_router, prefix="/api/workspaces", tags=["files"])
 app.include_router(terminal_router, prefix="/api/terminal", tags=["terminal"])
 app.include_router(preview_router, prefix="/api/preview", tags=["preview"])
 app.include_router(git_router, prefix="/api/git", tags=["git"])
+app.include_router(task_sessions_router, prefix="/api/task-sessions", tags=["task-sessions"])
 
 
 @app.get("/health")
