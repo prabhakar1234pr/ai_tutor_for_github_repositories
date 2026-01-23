@@ -15,27 +15,103 @@ logger = logging.getLogger(__name__)
 
 async def resume_stuck_projects():
     """
-    Find and resume processing for projects stuck in 'created' status.
+    Find and resume processing for projects stuck in 'created' or 'processing' status.
     This handles recovery after deployments or service restarts.
+
+    Projects in 'processing' status for >30 minutes are considered stuck and reset to 'created'.
     """
     try:
-        logger.info("🔍 Checking for stuck projects (status='created')...")
+        import datetime
+
+        logger.info("🔍 Checking for stuck projects...")
         supabase = get_supabase_client()
 
-        # Find all projects with status 'created'
-        projects_response = (
+        # Find all projects with status 'created' (never started)
+        created_projects_response = (
             supabase.table("projects")
-            .select("project_id, github_url, project_name, created_at")
+            .select("project_id, github_url, project_name, created_at, updated_at")
             .eq("status", "created")
             .execute()
         )
 
-        if not projects_response.data:
+        # Find projects stuck in 'processing' status (likely interrupted)
+        # Reset them to 'created' if they've been processing for >30 minutes
+        processing_projects_response = (
+            supabase.table("projects")
+            .select("project_id, github_url, project_name, created_at, updated_at")
+            .eq("status", "processing")
+            .execute()
+        )
+
+        stuck_projects = []
+
+        # Add projects with 'created' status
+        if created_projects_response.data:
+            stuck_projects.extend(created_projects_response.data)
+            logger.info(
+                f"📋 Found {len(created_projects_response.data)} project(s) with status 'created'"
+            )
+
+        # Check for projects stuck in 'processing' status
+        if processing_projects_response.data:
+            now = datetime.datetime.now(datetime.UTC)
+            reset_count = 0
+
+            for project in processing_projects_response.data:
+                updated_at_str = project.get("updated_at")
+                if updated_at_str:
+                    try:
+                        # Parse the timestamp
+                        if isinstance(updated_at_str, str):
+                            updated_at = datetime.datetime.fromisoformat(
+                                updated_at_str.replace("Z", "+00:00")
+                            )
+                        else:
+                            updated_at = updated_at_str
+
+                        # Check if stuck for >30 minutes
+                        time_diff = (now - updated_at).total_seconds() / 60  # minutes
+
+                        if time_diff > 30:
+                            # Reset to 'created' so it can be retried
+                            project_id = project["project_id"]
+                            logger.warning(
+                                f"⚠️  Project {project.get('project_name', 'Unknown')} "
+                                f"(project_id={project_id}) stuck in 'processing' for {time_diff:.1f} minutes. "
+                                f"Resetting to 'created' status."
+                            )
+                            supabase.table("projects").update({"status": "created"}).eq(
+                                "project_id", project_id
+                            ).execute()
+                            stuck_projects.append(project)
+                            reset_count += 1
+                        else:
+                            logger.debug(
+                                f"   Project {project.get('project_name', 'Unknown')} "
+                                f"in 'processing' for {time_diff:.1f} minutes (still within limit)"
+                            )
+                    except Exception as parse_error:
+                        logger.warning(
+                            f"⚠️  Could not parse timestamp for project {project.get('project_id')}: {parse_error}"
+                        )
+                        # If we can't parse, assume it's stuck and reset
+                        project_id = project["project_id"]
+                        supabase.table("projects").update({"status": "created"}).eq(
+                            "project_id", project_id
+                        ).execute()
+                        stuck_projects.append(project)
+                        reset_count += 1
+
+            if reset_count > 0:
+                logger.info(
+                    f"🔄 Reset {reset_count} stuck 'processing' project(s) to 'created' status"
+                )
+
+        if not stuck_projects:
             logger.info("✅ No stuck projects found")
             return
 
-        stuck_projects = projects_response.data
-        logger.info(f"📋 Found {len(stuck_projects)} stuck project(s) to resume")
+        logger.info(f"📋 Total stuck projects to resume: {len(stuck_projects)}")
 
         # Resume each stuck project
         for project in stuck_projects:
@@ -49,6 +125,8 @@ async def resume_stuck_projects():
                     f"🔄 Resuming project: {project_name} (project_id={project_id}, created_at={created_at})"
                 )
                 # Run pipeline in background (non-blocking)
+                # Using asyncio.create_task ensures it runs asynchronously
+                # The pipeline itself handles status updates and errors
                 asyncio.create_task(
                     run_embedding_pipeline(
                         str(project_id),
