@@ -28,7 +28,8 @@ RUN mkdir -p ./credentials
 
 # Copy startup script
 COPY scripts/startup.sh /startup.sh
-RUN chmod +x /startup.sh
+RUN chmod +x /startup.sh && \
+    sed -i 's/\r$//' /startup.sh
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

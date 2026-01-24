@@ -1,0 +1,34 @@
+# Example override file for local development
+# Copy this to docker-compose.override.yml and customize as needed
+# docker-compose.override.yml is automatically loaded by docker-compose
+
+version: '3.8'
+
+services:
+  api:
+    # Override volumes to enable hot-reload during development
+    volumes:
+      - ./app:/app/app
+      - ./credentials:/app/credentials:ro
+    # Enable debug mode
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+
+  roadmap:
+    volumes:
+      - ./app:/app/app
+      - ./credentials:/app/credentials:ro
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+
+  workspaces:
+    volumes:
+      - ./app:/app/app
+      - ./credentials:/app/credentials:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - workspace-data:/var/lib/docker/volumes
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG

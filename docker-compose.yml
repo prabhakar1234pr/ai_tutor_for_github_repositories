@@ -1,0 +1,141 @@
+services:
+  # Main API Service (mirrors gitguide-api Cloud Run)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gitguide-api
+    ports:
+      - "8000:8080"
+    environment:
+      - APP_MODULE=app.main:app
+      - PORT=8080
+      - ENVIRONMENT=development
+      # Load from .env file
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - ROADMAP_SERVICE_URL=http://roadmap:8080
+      - INTERNAL_AUTH_TOKEN=${INTERNAL_AUTH_TOKEN:-dev-token}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCP_LOCATION=${GCP_LOCATION:-us-central1}
+      - GCP_SA_KEY=${GCP_SA_KEY}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_API_KEY2=${GROQ_API_KEY2}
+      - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_DEPLOYMENT_GPT_4_1=${AZURE_OPENAI_DEPLOYMENT_GPT_4_1}
+      - GIT_ACCESS_TOKEN=${GIT_ACCESS_TOKEN}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    volumes:
+      - ./app:/app/app:ro
+      - ./credentials:/app/credentials:ro
+    networks:
+      - gitguide-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Roadmap Service (mirrors gitguide-roadmap Cloud Run)
+  roadmap:
+    build:
+      context: .
+      dockerfile: Dockerfile.roadmap
+    container_name: gitguide-roadmap
+    ports:
+      - "8001:8080"
+    environment:
+      - APP_MODULE=app.roadmap_service:app
+      - PORT=8080
+      - ENVIRONMENT=development
+      # Load from .env file
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_AUTH_TOKEN=${INTERNAL_AUTH_TOKEN:-dev-token}
+      - GCP_PROJECT_ID=${GCP_PROJECT_ID}
+      - GCP_LOCATION=${GCP_LOCATION:-us-central1}
+      - GCP_SA_KEY=${GCP_SA_KEY}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_API_KEY2=${GROQ_API_KEY2}
+      - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_OPENAI_DEPLOYMENT_GPT_4_1=${AZURE_OPENAI_DEPLOYMENT_GPT_4_1}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    volumes:
+      - ./app:/app/app:ro
+      - ./credentials:/app/credentials:ro
+    networks:
+      - gitguide-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # Workspaces Service (mirrors gitguide-workspaces VM)
+  workspaces:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gitguide-workspaces
+    ports:
+      - "8002:8080"
+    environment:
+      - APP_MODULE=app.workspace_service:app
+      - PORT=8080
+      - ENVIRONMENT=development
+      # Load from .env file
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - GIT_ACCESS_TOKEN=${GIT_ACCESS_TOKEN}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    volumes:
+      - ./app:/app/app:ro
+      - ./credentials:/app/credentials:ro
+      # Mount Docker socket so workspace service can manage containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Persistent storage for workspace containers
+      - workspace-data:/var/lib/docker/volumes
+    networks:
+      - gitguide-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    # Requires Docker socket access
+    privileged: false
+
+networks:
+  gitguide-network:
+    driver: bridge
+
+volumes:
+  workspace-data:
+    driver: local
