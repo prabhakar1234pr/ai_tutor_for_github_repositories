@@ -8,11 +8,19 @@ set -ex
 mkdir -p /app/credentials
 
 # Write service account JSON to file if GCP_SA_KEY is set
+# GCP_SA_KEY can be either base64-encoded or plain JSON
 if [ -n "$GCP_SA_KEY" ]; then
-  echo "$GCP_SA_KEY" > /app/credentials/service-account.json
+  # Try to decode as base64 first (if it fails, treat as plain JSON)
+  if echo "$GCP_SA_KEY" | base64 -d > /app/credentials/service-account.json 2>/dev/null; then
+    echo "✓ Service account credentials decoded from base64"
+  else
+    # If base64 decode fails, treat as plain JSON
+    echo "$GCP_SA_KEY" > /app/credentials/service-account.json
+    echo "✓ Service account credentials written (plain JSON)"
+  fi
   chmod 600 /app/credentials/service-account.json
   export GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
-  echo "✓ Service account credentials written"
+  echo "✓ GOOGLE_APPLICATION_CREDENTIALS set to /app/credentials/service-account.json"
 fi
 
 # Use PORT from environment (Cloud Run sets this), default to 8080
