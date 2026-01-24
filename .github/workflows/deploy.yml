@@ -3,6 +3,8 @@ name: Deploy to GCP
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -13,9 +15,40 @@ env:
   CLOUD_RUN_RUNTIME_SA: gemini-api-service@gitguide-backend.iam.gserviceaccount.com
 
 jobs:
+  ci:
+    name: Lint + Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Run tests
+        run: uv run pytest -x -q --ignore=tests/test_roadmap_e2e.py --ignore=tests/test_langgraph_migration_e2e.py
+
   deploy-cloud-run:
     name: Build + Deploy Cloud Run
     runs-on: ubuntu-latest
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     permissions:
       contents: read
       id-token: write
@@ -28,20 +61,6 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-        # NOTE: Service account must have these roles:
-        # 1. Artifact Registry Writer: roles/artifactregistry.writer
-        # 2. Cloud Run Admin: roles/run.admin
-        # 3. Service Account User: roles/iam.serviceAccountUser (to act as runtime SA)
-        # Grant with:
-        # gcloud projects add-iam-policy-binding gitguide-backend \
-        #   --member="serviceAccount:gemini-api-service@gitguide-backend.iam.gserviceaccount.com" \
-        #   --role="roles/artifactregistry.writer"
-        # gcloud projects add-iam-policy-binding gitguide-backend \
-        #   --member="serviceAccount:gemini-api-service@gitguide-backend.iam.gserviceaccount.com" \
-        #   --role="roles/run.admin"
-        # gcloud projects add-iam-policy-binding gitguide-backend \
-        #   --member="serviceAccount:gemini-api-service@gitguide-backend.iam.gserviceaccount.com" \
-        #   --role="roles/iam.serviceAccountUser"
 
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
@@ -90,18 +109,6 @@ jobs:
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             ROADMAP_SERVICE_URL=${{ secrets.ROADMAP_SERVICE_URL }}
             INTERNAL_AUTH_TOKEN=${{ secrets.INTERNAL_AUTH_TOKEN }}
-            # Add any other env vars you need:
-            # CORS_ORIGINS=${{ secrets.CORS_ORIGINS }}
-            # REDIS_URL=${{ secrets.REDIS_URL }}
-
-      - name: Check API Deployment Logs
-        if: always()
-        run: |
-          echo "=== Recent API Service Logs ==="
-          gcloud run services logs read gitguide-api --region=${{ env.REGION }} --limit=50 || echo "Could not retrieve logs"
-          echo ""
-          echo "=== API Revision Status ==="
-          gcloud run revisions list --service=gitguide-api --region=${{ env.REGION }} --limit=1 --format='table(metadata.name,status.conditions[0].type,status.conditions[0].status)' || echo "Could not retrieve revision status"
 
       - name: Deploy Roadmap (Cloud Run)
         id: deploy-roadmap
@@ -135,62 +142,65 @@ jobs:
             INTERNAL_AUTH_TOKEN=${{ secrets.INTERNAL_AUTH_TOKEN }}
             GCP_SA_KEY=${{ secrets.GCP_SA_KEY }}
 
-      - name: Check Roadmap Deployment Logs
+      - name: Wait for Cloud Run revisions
+        run: |
+          set -e
+          echo "Waiting for API service..."
+          API_READY=0
+          for i in $(seq 1 30); do
+            STATUS=$(gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='value(status.conditions[0].status)' 2>/dev/null || echo "UNKNOWN")
+            if [ "$STATUS" = "True" ]; then echo "API ready."; API_READY=1; break; fi
+            echo "Attempt $i/30: API status $STATUS"
+            sleep 10
+          done
+          [ "$API_READY" -eq 1 ] || (echo "API service did not become ready"; exit 1)
+          echo "Waiting for Roadmap service..."
+          ROADMAP_READY=0
+          for i in $(seq 1 30); do
+            STATUS=$(gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='value(status.conditions[0].status)' 2>/dev/null || echo "UNKNOWN")
+            if [ "$STATUS" = "True" ]; then echo "Roadmap ready."; ROADMAP_READY=1; break; fi
+            echo "Attempt $i/30: Roadmap status $STATUS"
+            sleep 10
+          done
+          [ "$ROADMAP_READY" -eq 1 ] || (echo "Roadmap service did not become ready"; exit 1)
+
+      - name: Health check (API)
+        run: |
+          API_URL=$(gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='value(status.url)')
+          echo "Checking $API_URL/api/health ..."
+          for i in $(seq 1 12); do
+            if curl -sf "$API_URL/api/health" > /dev/null; then
+              echo "API health check OK"
+              exit 0
+            fi
+            echo "Attempt $i/12: waiting 10s..."
+            sleep 10
+          done
+          echo "API health check failed"
+          exit 1
+
+      - name: Health check (Roadmap revision)
+        run: |
+          REV=$(gcloud run revisions list --service=gitguide-roadmap --region=${{ env.REGION }} --limit=1 --format='value(metadata.name)' 2>/dev/null)
+          if [ -z "$REV" ]; then echo "No roadmap revision found"; exit 1; fi
+          echo "Latest Roadmap revision: $REV"
+          gcloud run revisions describe "$REV" --region=${{ env.REGION }} --format='value(status.conditions[0].status)' | grep -q True
+
+      - name: Log deployment summary
         if: always()
         run: |
-          echo "=== Recent Roadmap Service Logs ==="
-          gcloud run services logs read gitguide-roadmap --region=${{ env.REGION }} --limit=50 || echo "Could not retrieve logs"
-          echo ""
-          echo "=== Roadmap Revision Status ==="
-          gcloud run revisions list --service=gitguide-roadmap --region=${{ env.REGION }} --limit=1 --format='table(metadata.name,status.conditions[0].type,status.conditions[0].status)' || echo "Could not retrieve revision status"
+          echo "=== API ==="
+          gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='value(status.url)' || true
+          gcloud run revisions list --service=gitguide-api --region=${{ env.REGION }} --limit=1 --format='table(metadata.name,status.conditions[0].status)' || true
+          echo "=== Roadmap ==="
+          gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='value(status.url)' || true
+          gcloud run revisions list --service=gitguide-roadmap --region=${{ env.REGION }} --limit=1 --format='table(metadata.name,status.conditions[0].status)' || true
 
-      - name: Wait for Services to be Ready
-        run: |
-          echo "Waiting for API service to be ready..."
-          for i in {1..30}; do
-            STATUS=$(gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='value(status.conditions[0].status)' 2>/dev/null || echo "UNKNOWN")
-            if [ "$STATUS" = "True" ]; then
-              echo "API service is ready!"
-              break
-            fi
-            echo "Attempt $i/30: Status is $STATUS, waiting..."
-            sleep 10
-          done
-          echo ""
-          echo "Waiting for Roadmap service to be ready..."
-          for i in {1..30}; do
-            STATUS=$(gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='value(status.conditions[0].status)' 2>/dev/null || echo "UNKNOWN")
-            if [ "$STATUS" = "True" ]; then
-              echo "Roadmap service is ready!"
-              break
-            fi
-            echo "Attempt $i/30: Status is $STATUS, waiting..."
-            sleep 10
-          done
-
-      - name: Verify Deployments
-        run: |
-          echo "=== API Service Status ==="
-          gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='yaml(status)' || echo "API service check failed"
-          echo ""
-          echo "=== Roadmap Service Status ==="
-          gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='yaml(status)' || echo "Roadmap service check failed"
-
-      - name: Show Cloud Run URLs
-        run: |
-          echo "API URL:"
-          gcloud run services describe gitguide-api --region=${{ env.REGION }} --format='value(status.url)'
-          echo "Roadmap URL:"
-          gcloud run services describe gitguide-roadmap --region=${{ env.REGION }} --format='value(status.url)'
-
-  # ============================================
-  # Deploy to Workspace VM
-  # ============================================
   deploy-workspace-vm:
-    name: Deploy to Workspace VM
+    name: Deploy Workspace VM
     runs-on: ubuntu-latest
     needs: deploy-cloud-run
-
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     steps:
       - name: Deploy to Workspace VM via SSH
         uses: appleboy/ssh-action@v1.0.3
@@ -199,9 +209,29 @@ jobs:
           username: ${{ secrets.VM_USER }}
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
+            set -e
             cd /opt/gitguide-backend
-            git pull origin main
+            git fetch origin main && git reset --hard origin/main
             source .venv/bin/activate
-            uv pip install -r pyproject.toml
+            uv sync
             sudo systemctl restart gitguide-workspaces
-            echo "Deployment complete!"
+            echo "VM deploy complete."
+
+      - name: Health check (Workspace VM service)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          script: |
+            for i in 1 2 3 4 5 6; do
+              if systemctl is-active --quiet gitguide-workspaces; then
+                echo "gitguide-workspaces is active"
+                exit 0
+              fi
+              echo "Waiting for service... ($i/6)"
+              sleep 5
+            done
+            echo "gitguide-workspaces failed to become active"
+            systemctl status gitguide-workspaces || true
+            exit 1

@@ -15,6 +15,55 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _get_identity_token_sync(target_url: str) -> str:
+    """
+    Get a Google Cloud Identity token for service-to-service authentication.
+
+    Uses the GCP metadata server to fetch an identity token for the target service.
+    This is the standard way to get identity tokens in Cloud Run.
+
+    This is a synchronous function that should be called from async context
+    using asyncio.to_thread or similar.
+
+    Args:
+        target_url: The target Cloud Run service URL
+
+    Returns:
+        Identity token as a string
+    """
+    try:
+        # Use httpx for synchronous request to metadata server
+        # This is the standard way in GCP/Cloud Run
+        metadata_url = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity"
+        params = {"audience": target_url}
+        headers = {"Metadata-Flavor": "Google"}
+
+        # Use httpx.Client for synchronous request
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(metadata_url, params=params, headers=headers)
+            response.raise_for_status()
+            return response.text
+    except Exception as e:
+        logger.error(f"❌ Failed to get identity token from metadata server: {e}", exc_info=True)
+        # If identity token fails, we'll fall back to X-Internal-Token
+        raise
+
+
+async def _get_identity_token(target_url: str) -> str:
+    """
+    Async wrapper to get Google Cloud Identity token.
+
+    Args:
+        target_url: The target Cloud Run service URL
+
+    Returns:
+        Identity token as a string
+    """
+    import asyncio
+
+    return await asyncio.to_thread(_get_identity_token_sync, target_url)
+
+
 async def call_roadmap_service_incremental(project_id: str) -> dict:
     """
     Call the roadmap service to trigger incremental concept generation.
@@ -37,25 +86,33 @@ async def call_roadmap_service_incremental(project_id: str) -> dict:
         logger.error("❌ ROADMAP_SERVICE_URL not configured - cannot call roadmap service")
         raise ValueError("Roadmap service URL not configured")
 
-    if not settings.internal_auth_token:
-        logger.error("❌ INTERNAL_AUTH_TOKEN not configured - cannot call roadmap service")
-        raise ValueError("Internal auth token not configured")
-
     url = f"{settings.roadmap_service_url}/api/roadmap/incremental-generate"
-    # Verify token is configured
-    if not settings.internal_auth_token:
-        logger.error("=" * 70)
-        logger.error("❌ INTERNAL_AUTH_TOKEN NOT CONFIGURED IN MAIN API!")
-        logger.error("=" * 70)
-        raise ValueError("INTERNAL_AUTH_TOKEN not configured")
 
-    logger.info(f"🔐 Using auth token (first 20 chars): {settings.internal_auth_token[:20]}...")
-    logger.info(f"🔐 Token length: {len(settings.internal_auth_token)}")
+    # Get Google Cloud Identity token for service-to-service authentication
+    try:
+        identity_token = await _get_identity_token(settings.roadmap_service_url)
+        logger.info("🔐 Got Google Cloud Identity token for service-to-service auth")
+    except Exception as e:
+        logger.error(f"❌ Failed to get identity token: {e}")
+        # Fallback to internal auth token if identity token fails
+        if not settings.internal_auth_token:
+            raise ValueError(
+                "Failed to get identity token and INTERNAL_AUTH_TOKEN not configured"
+            ) from e
+        logger.warning("⚠️  Falling back to X-Internal-Token header")
+        identity_token = None
 
     headers = {
-        "X-Internal-Token": settings.internal_auth_token,
         "Content-Type": "application/json",
     }
+
+    # Use identity token if available, otherwise fall back to X-Internal-Token
+    if identity_token:
+        headers["Authorization"] = f"Bearer {identity_token}"
+    elif settings.internal_auth_token:
+        headers["X-Internal-Token"] = settings.internal_auth_token
+    else:
+        raise ValueError("No authentication method available")
     payload = {"project_id": project_id}
 
     logger.info("=" * 70)
@@ -155,25 +212,33 @@ async def call_roadmap_service_generate(
         logger.error("❌ ROADMAP_SERVICE_URL not configured - cannot call roadmap service")
         raise ValueError("Roadmap service URL not configured")
 
-    if not settings.internal_auth_token:
-        logger.error("❌ INTERNAL_AUTH_TOKEN not configured - cannot call roadmap service")
-        raise ValueError("Internal auth token not configured")
-
     url = f"{settings.roadmap_service_url}/api/roadmap/generate-internal"
-    # Verify token is configured
-    if not settings.internal_auth_token:
-        logger.error("=" * 70)
-        logger.error("❌ INTERNAL_AUTH_TOKEN NOT CONFIGURED IN MAIN API!")
-        logger.error("=" * 70)
-        raise ValueError("INTERNAL_AUTH_TOKEN not configured")
 
-    logger.info(f"🔐 Using auth token (first 20 chars): {settings.internal_auth_token[:20]}...")
-    logger.info(f"🔐 Token length: {len(settings.internal_auth_token)}")
+    # Get Google Cloud Identity token for service-to-service authentication
+    try:
+        identity_token = await _get_identity_token(settings.roadmap_service_url)
+        logger.info("🔐 Got Google Cloud Identity token for service-to-service auth")
+    except Exception as e:
+        logger.error(f"❌ Failed to get identity token: {e}")
+        # Fallback to internal auth token if identity token fails
+        if not settings.internal_auth_token:
+            raise ValueError(
+                "Failed to get identity token and INTERNAL_AUTH_TOKEN not configured"
+            ) from e
+        logger.warning("⚠️  Falling back to X-Internal-Token header")
+        identity_token = None
 
     headers = {
-        "X-Internal-Token": settings.internal_auth_token,
         "Content-Type": "application/json",
     }
+
+    # Use identity token if available, otherwise fall back to X-Internal-Token
+    if identity_token:
+        headers["Authorization"] = f"Bearer {identity_token}"
+    elif settings.internal_auth_token:
+        headers["X-Internal-Token"] = settings.internal_auth_token
+    else:
+        raise ValueError("No authentication method available")
     payload = {
         "project_id": project_id,
         "github_url": github_url,

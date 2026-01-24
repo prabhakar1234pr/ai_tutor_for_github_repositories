@@ -1,0 +1,66 @@
+name: Rollback Cloud Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to rollback (api or roadmap)"
+        required: true
+        default: "api"
+        type: choice
+        options:
+          - api
+          - roadmap
+
+env:
+  PROJECT_ID: gitguide-backend
+  REGION: us-central1
+
+jobs:
+  rollback:
+    name: Rollback gitguide-${{ inputs.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Auth to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: List revisions
+        id: revisions
+        run: |
+          SVC="gitguide-${{ inputs.service }}"
+          echo "Current revisions for $SVC:"
+          gcloud run revisions list --service="$SVC" --region=${{ env.REGION }} --limit=5 --format="table(metadata.name,status.conditions[0].status,metadata.creationTimestamp)"
+          CURRENT=$(gcloud run revisions list --service="$SVC" --region=${{ env.REGION }} --limit=1 --format='value(metadata.name)')
+          PREVIOUS=$(gcloud run revisions list --service="$SVC" --region=${{ env.REGION }} --limit=2 --format='value(metadata.name)' | tail -1)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "previous=$PREVIOUS" >> $GITHUB_OUTPUT
+          echo "Rolling back from $CURRENT to $PREVIOUS"
+
+      - name: Rollback to previous revision
+        run: |
+          SVC="gitguide-${{ inputs.service }}"
+          PREV=${{ steps.revisions.outputs.previous }}
+          if [ -z "$PREV" ]; then
+            echo "No previous revision found"
+            exit 1
+          fi
+          gcloud run services update-traffic "$SVC" \
+            --region=${{ env.REGION }} \
+            --to-revisions="${PREV}=100"
+          echo "Rollback complete. 100% traffic now on $PREV"
+
+      - name: Verify rollback
+        run: |
+          SVC="gitguide-${{ inputs.service }}"
+          gcloud run services describe "$SVC" --region=${{ env.REGION }} --format='yaml(status.traffic)'
