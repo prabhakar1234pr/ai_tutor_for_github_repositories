@@ -93,7 +93,12 @@ async def call_roadmap_service_incremental(project_id: str) -> dict:
         "Content-Type": "application/json",
     }
 
+    logger.info(f"🔐 INTERNAL_AUTH_TOKEN configured: {settings.internal_auth_token is not None}")
     if settings.internal_auth_token:
+        logger.info(f"🔐 INTERNAL_AUTH_TOKEN length: {len(settings.internal_auth_token)}")
+        logger.info(
+            f"🔐 INTERNAL_AUTH_TOKEN (first 20 chars): {settings.internal_auth_token[:20]}..."
+        )
         headers["X-Internal-Token"] = settings.internal_auth_token
         logger.info("🔐 Using X-Internal-Token for service-to-service auth")
     else:
@@ -130,6 +135,14 @@ async def call_roadmap_service_incremental(project_id: str) -> dict:
         async with httpx.AsyncClient(timeout=300.0) as client:
             logger.info("⏳ Waiting for roadmap service response...")
             logger.info(f"📤 Sending request with headers: {dict(headers)}")
+            # Log the actual token being sent (masked)
+            if "X-Internal-Token" in headers:
+                masked_token = (
+                    headers["X-Internal-Token"][:10] + "..." + headers["X-Internal-Token"][-10:]
+                )
+                logger.info(
+                    f"📤 X-Internal-Token being sent: {masked_token} (length: {len(headers['X-Internal-Token'])})"
+                )
             response = await client.post(url, json=payload, headers=headers)
             logger.info(f"📥 Received response: Status {response.status_code}")
 
@@ -264,6 +277,14 @@ async def call_roadmap_service_generate(
         async with httpx.AsyncClient(timeout=300.0) as client:
             logger.info("⏳ Waiting for roadmap service response...")
             logger.info(f"📤 Sending request with headers: {dict(headers)}")
+            # Log the actual token being sent (masked)
+            if "X-Internal-Token" in headers:
+                masked_token = (
+                    headers["X-Internal-Token"][:10] + "..." + headers["X-Internal-Token"][-10:]
+                )
+                logger.info(
+                    f"📤 X-Internal-Token being sent: {masked_token} (length: {len(headers['X-Internal-Token'])})"
+                )
             response = await client.post(url, json=payload, headers=headers)
             logger.info(f"📥 Received response: Status {response.status_code}")
 
