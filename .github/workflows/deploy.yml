@@ -209,8 +209,15 @@ jobs:
             set -e
             cd /opt/gitguide-backend
             git fetch origin main && git reset --hard origin/main
+
+            # Fix permissions on venv if needed, then sync
+            if [ -d .venv ]; then
+              sudo chown -R $USER:$USER .venv 2>/dev/null || true
+              find .venv -type d -name __pycache__ -exec sudo rm -rf {} + 2>/dev/null || true
+            fi
+
             source .venv/bin/activate
-            uv sync
+            uv sync --frozen || uv sync
             sudo systemctl restart gitguide-workspaces
             echo "VM deploy complete."
 
