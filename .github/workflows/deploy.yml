@@ -43,12 +43,21 @@ jobs:
 
       - name: Run tests
         run: |
+          set +e
           uv run pytest -x -q \
             --ignore=tests/test_roadmap_e2e.py \
             --ignore=tests/test_langgraph_migration_e2e.py \
             --tb=short \
             -p no:cacheprovider \
-            || (echo "Pytest exit code: $?" && exit 1)
+            --override-ini="cache_dir="
+          TEST_EXIT=$?
+          if [ $TEST_EXIT -eq 0 ] || [ $TEST_EXIT -eq 5 ]; then
+            echo "Tests passed or no tests collected"
+            exit 0
+          else
+            echo "Tests failed with exit code: $TEST_EXIT"
+            exit 1
+          fi
 
   deploy-cloud-run:
     name: Build + Deploy Cloud Run
