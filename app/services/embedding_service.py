@@ -82,43 +82,47 @@ class EmbeddingService:
             from app.config import PROJECT_ROOT
 
             # Check for service account (preferred method - uses GCP free credits)
-            if settings.google_application_credentials:
+            # First check environment variable (set by startup.sh in Cloud Run)
+            creds_path = None
+            if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                creds_path = Path(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
+                logger.info(f"📁 Found GOOGLE_APPLICATION_CREDENTIALS env var: {creds_path}")
+            elif settings.google_application_credentials:
                 creds_path = Path(settings.google_application_credentials)
                 if not creds_path.is_absolute():
                     creds_path = PROJECT_ROOT / creds_path
+                logger.info(f"📁 Found google_application_credentials in settings: {creds_path}")
 
-                if creds_path.exists():
-                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(creds_path)
-                    project_id = settings.gcp_project_id
-                    if not project_id:
-                        # Try to read project_id from JSON
-                        try:
-                            with open(creds_path) as f:
-                                creds_data = json.load(f)
-                                project_id = creds_data.get("project_id")
-                                if project_id:
-                                    logger.info(f"✅ Found project_id in JSON: {project_id}")
-                        except Exception as e:
-                            logger.error(f"❌ Failed to read project_id from JSON: {e}")
+            if creds_path and creds_path.exists():
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(creds_path)
+                project_id = settings.gcp_project_id
+                if not project_id:
+                    # Try to read project_id from JSON
+                    try:
+                        with open(creds_path) as f:
+                            creds_data = json.load(f)
+                            project_id = creds_data.get("project_id")
+                            if project_id:
+                                logger.info(f"✅ Found project_id in JSON: {project_id}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to read project_id from JSON: {e}")
 
-                    if not project_id:
-                        raise ValueError(
-                            "GCP_PROJECT_ID is required when using service account. "
-                            "Set it in .env or ensure it's in your JSON file."
-                        )
+                if not project_id:
+                    raise ValueError(
+                        "GCP_PROJECT_ID is required when using service account. "
+                        "Set it in .env or ensure it's in your JSON file."
+                    )
 
-                    vertexai.init(project=project_id, location=settings.gcp_location)
-                    logger.info(f"✅ Using Vertex AI with Service Account (project: {project_id})")
-                else:
+                vertexai.init(project=project_id, location=settings.gcp_location)
+                logger.info(f"✅ Using Vertex AI with Service Account (project: {project_id})")
+            else:
+                if creds_path:
                     logger.warning(f"⚠️ Service account file not found: {creds_path}")
-                    logger.warning("   Falling back to Application Default Credentials")
+                logger.info("   Falling back to Application Default Credentials")
 
             # Fallback: Use Application Default Credentials (ADC) on GCP (Cloud Run / GCE)
             # This works when the Cloud Run service is configured with a runtime service account
-            if (
-                not settings.google_application_credentials
-                or not Path(settings.google_application_credentials).exists()
-            ):
+            if not creds_path or not creds_path.exists():
                 try:
                     import google.auth
 
