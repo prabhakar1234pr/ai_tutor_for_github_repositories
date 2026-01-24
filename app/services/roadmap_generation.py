@@ -63,8 +63,9 @@ async def generate_roadmap(
             raise HTTPException(status_code=404, detail="Project not found")
 
         # Trigger roadmap generation in background
+        # Use sync wrapper for BackgroundTasks (which doesn't support async functions directly)
         background_tasks.add_task(
-            run_roadmap_generation,
+            trigger_roadmap_generation_sync,
             project_id=request.project_id,
             github_url=request.github_url,
             skill_level=request.skill_level,

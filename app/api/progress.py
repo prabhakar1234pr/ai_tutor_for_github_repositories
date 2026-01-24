@@ -1073,16 +1073,32 @@ async def _check_and_complete_concept_if_ready(
             logger.info(
                 f"🔄 Triggering incremental generation after auto-completion of concept {concept_id}"
             )
-            # Use asyncio.create_task since we're in an async context
+            # Use asyncio.create_task for fire-and-forget HTTP call
+            # This is safe because the parent function is awaited, so the task will complete
             import asyncio
 
             from app.services.roadmap_client import call_roadmap_service_incremental
 
+            async def trigger_incremental_safely():
+                """Wrapper to safely trigger incremental generation with error handling."""
+                try:
+                    await call_roadmap_service_incremental(project_id)
+                    logger.info(
+                        f"✅ Incremental generation triggered successfully for project {project_id}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"⚠️  Failed to trigger incremental generation: {e}", exc_info=True
+                    )
+                    # Don't raise - this is fire-and-forget, we don't want to fail concept completion
+
             try:
                 # Create background task (fire and forget) - calls roadmap service via HTTP
-                asyncio.create_task(call_roadmap_service_incremental(project_id))
+                asyncio.create_task(trigger_incremental_safely())
             except Exception as e:
-                logger.warning(f"⚠️  Failed to trigger incremental generation: {e}")
+                logger.warning(
+                    f"⚠️  Failed to create incremental generation task: {e}", exc_info=True
+                )
 
             # Check if all concepts for the day are done
             concept_response = (

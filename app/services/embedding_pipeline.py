@@ -275,7 +275,9 @@ async def run_embedding_pipeline(
                     f"   🔐 Auth Token: {'✓ Configured' if app_settings.internal_auth_token else '✗ Missing'}"
                 )
 
-                # Create the async task and add a callback to log completion/errors
+                # Call roadmap service HTTP endpoint (non-blocking, fire-and-forget)
+                # Since we're already in a background task, we can create a fire-and-forget task
+                # The HTTP call will trigger the roadmap service which handles its own background processing
                 async def call_with_logging():
                     try:
                         logger.info("🚀 Starting HTTP call to roadmap service...")
@@ -289,14 +291,15 @@ async def run_embedding_pipeline(
                         return result
                     except Exception as e:
                         logger.error(f"❌ Roadmap service HTTP call failed: {e}", exc_info=True)
-                        raise
+                        # Don't raise - this is fire-and-forget, we don't want to fail the embedding pipeline
+                        return None
 
-                task = asyncio.create_task(call_with_logging())
-                logger.info("✅ Async task created for roadmap generation")
-                logger.info(f"   Task object: {task}")
-                logger.info(f"   Task done: {task.done()}")
+                # Create fire-and-forget task (we're already in a background task, so this is safe)
+                # The roadmap service will handle its own background processing
+                asyncio.create_task(call_with_logging())
+                logger.info("✅ HTTP call task created for roadmap generation")
                 logger.info(
-                    "   ⚠️  Task will run in background - check roadmap service logs for progress"
+                    "   ⚠️  Roadmap generation triggered - check roadmap service logs for progress"
                 )
                 logger.info("✅ Step 8/8: Roadmap generation scheduled via roadmap service")
                 logger.info("=" * 70)

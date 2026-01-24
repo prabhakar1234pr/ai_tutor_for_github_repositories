@@ -12,7 +12,7 @@ All LangGraph workflows execute here:
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -21,8 +21,8 @@ from app.services.roadmap_generation import (
     router as roadmap_gen_router,
 )
 from app.services.roadmap_generation import (
-    run_roadmap_generation,
     trigger_incremental_generation_sync,
+    trigger_roadmap_generation_sync,
 )
 
 # Configure logging
@@ -202,7 +202,9 @@ async def incremental_generate(request: IncrementalGenerateRequest):
 
 
 @app.post("/api/roadmap/generate-internal", dependencies=[Depends(verify_internal_auth)])
-async def generate_roadmap_internal(request: GenerateRoadmapInternalRequest):
+async def generate_roadmap_internal(
+    request: GenerateRoadmapInternalRequest, background_tasks: BackgroundTasks
+):
     """
     Internal endpoint to trigger full roadmap generation.
 
@@ -210,6 +212,9 @@ async def generate_roadmap_internal(request: GenerateRoadmapInternalRequest):
     to trigger the complete LangGraph workflow for initial roadmap generation.
 
     Requires internal auth token in X-Internal-Token header.
+
+    Uses FastAPI BackgroundTasks to ensure the task runs after the response is sent
+    and is not cancelled by Cloud Run when the HTTP handler returns.
     """
     logger.info("=" * 70)
     logger.info("🚀 FULL ROADMAP GENERATION REQUEST RECEIVED")
@@ -227,44 +232,32 @@ async def generate_roadmap_internal(request: GenerateRoadmapInternalRequest):
         logger.info(f"🚀 Starting full roadmap generation for project_id={request.project_id}")
         logger.debug(f"   Request payload: {request.model_dump()}")
 
-        # Trigger roadmap generation (runs asynchronously)
-        # This will run the complete LangGraph workflow:
-        # analyze_repo → plan_curriculum → generate_content → generate_tasks
-        import asyncio
-
-        logger.info("📞 Creating async task for run_roadmap_generation")
+        # Use FastAPI BackgroundTasks instead of asyncio.create_task()
+        # This ensures the task runs after the response is sent and won't be cancelled
+        # by Cloud Run when the HTTP handler returns
+        logger.info("📞 Adding roadmap generation to background tasks")
         logger.info(f"   Project ID: {request.project_id}")
         logger.info(f"   GitHub URL: {request.github_url}")
         logger.info(f"   Skill Level: {request.skill_level}")
         logger.info(f"   Target Days: {request.target_days}")
 
-        # Get or create event loop
-        try:
-            loop = asyncio.get_running_loop()
-            logger.info(f"✅ Using existing event loop: {loop}")
-        except RuntimeError:
-            logger.warning("⚠️  No running event loop found, creating new one")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        task = asyncio.create_task(
-            run_roadmap_generation(
-                project_id=request.project_id,
-                github_url=request.github_url,
-                skill_level=request.skill_level,
-                target_days=request.target_days,
-            )
+        # Use the sync wrapper which creates its own event loop
+        # This ensures the task completes even if Cloud Run scales down the container
+        background_tasks.add_task(
+            trigger_roadmap_generation_sync,
+            project_id=request.project_id,
+            github_url=request.github_url,
+            skill_level=request.skill_level,
+            target_days=request.target_days,
         )
-        logger.info("✅ Async task created successfully")
-        logger.info(f"   Task object: {task}")
-        logger.info(f"   Task done: {task.done()}")
-        logger.info(f"   Task cancelled: {task.cancelled()}")
-        logger.info("   ⚠️  Task will run in background - check logs for progress")
+
+        logger.info("✅ Background task added successfully")
+        logger.info("   ⚠️  Task will run after response is sent - check logs for progress")
 
         logger.info("=" * 70)
         logger.info("✅ FULL ROADMAP GENERATION TRIGGERED SUCCESSFULLY")
         logger.info(f"   📦 Project ID: {request.project_id}")
-        logger.info("   ⚠️  Note: Generation runs asynchronously in background")
+        logger.info("   ⚠️  Note: Generation runs in background task")
         logger.info("=" * 70)
 
         return {
