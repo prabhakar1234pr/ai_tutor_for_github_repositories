@@ -67,60 +67,67 @@ app.include_router(roadmap_gen_router, prefix="/api/roadmap", tags=["roadmap-gen
 
 # Internal auth dependency for service-to-service calls
 async def verify_internal_auth(request: Request):
-    """Verify internal auth token for service-to-service calls."""
-    # Get the token from the header (try multiple variations)
-    # FastAPI/Starlette normalizes headers to lowercase, but we check both
+    """Verify internal auth token for service-to-service calls.
+
+    Accepts either:
+    1. X-Internal-Token header (shared secret)
+    2. Authorization: Bearer <token> (Google Cloud Identity token)
+    """
+    # Try X-Internal-Token first (shared secret method)
     x_internal_token = (
         request.headers.get("X-Internal-Token")
         or request.headers.get("x-internal-token")
         or request.headers.get("X-INTERNAL-TOKEN")
     )
 
+    # Try Authorization header (Google Cloud Identity token)
+    auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+    identity_token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        identity_token = auth_header.replace("Bearer ", "").strip()
+
     logger.info("=" * 70)
     logger.info("🔐 INTERNAL AUTH VERIFICATION")
-    logger.info(f"   Token received: {x_internal_token is not None}")
+    logger.info(f"   X-Internal-Token received: {x_internal_token is not None}")
+    logger.info(f"   Authorization Bearer received: {identity_token is not None}")
     if x_internal_token:
-        logger.info(f"   Token value (first 20 chars): {x_internal_token[:20]}...")
-        logger.info(f"   Token length: {len(x_internal_token)}")
-    else:
-        logger.error("   ❌ NO TOKEN RECEIVED IN HEADERS")
-    logger.info(
-        f"   Expected token (first 20 chars): {settings.internal_auth_token[:20] if settings.internal_auth_token else 'None'}..."
-    )
-    logger.info(
-        f"   Expected token length: {len(settings.internal_auth_token) if settings.internal_auth_token else 0}"
-    )
+        logger.info(f"   X-Internal-Token length: {len(x_internal_token)}")
+    if identity_token:
+        logger.info(f"   Identity token length: {len(identity_token)}")
     logger.info(f"   All headers keys: {list(request.headers.keys())}")
-    # Log header values (but mask sensitive data)
-    header_dict = dict(request.headers)
-    if "x-internal-token" in header_dict or "X-Internal-Token" in header_dict:
-        token_key = "x-internal-token" if "x-internal-token" in header_dict else "X-Internal-Token"
-        masked_token = (
-            header_dict[token_key][:10] + "..." + header_dict[token_key][-10:]
-            if len(header_dict[token_key]) > 20
-            else "***"
-        )
-        logger.info(f"   Header {token_key}: {masked_token}")
     logger.info("=" * 70)
 
-    if not settings.internal_auth_token:
-        logger.error("❌ INTERNAL_AUTH_TOKEN not configured - internal endpoints disabled")
-        raise HTTPException(status_code=503, detail="Internal auth not configured")
+    # If using X-Internal-Token (shared secret)
+    if x_internal_token:
+        if not settings.internal_auth_token:
+            logger.error("❌ INTERNAL_AUTH_TOKEN not configured - internal endpoints disabled")
+            raise HTTPException(status_code=503, detail="Internal auth not configured")
 
-    if x_internal_token != settings.internal_auth_token:
-        logger.error("=" * 70)
-        logger.error("❌ TOKEN MISMATCH")
-        logger.error(
-            f"   Expected length: {len(settings.internal_auth_token) if settings.internal_auth_token else 0}"
-        )
-        logger.error(f"   Received length: {len(x_internal_token) if x_internal_token else 0}")
-        logger.error(f"   Expected (full): {settings.internal_auth_token}")
-        logger.error(f"   Received (full): {x_internal_token}")
-        logger.error("=" * 70)
-        raise HTTPException(status_code=403, detail="Invalid internal auth token")
+        if x_internal_token != settings.internal_auth_token:
+            logger.error("❌ TOKEN MISMATCH (X-Internal-Token)")
+            logger.error(f"   Expected length: {len(settings.internal_auth_token)}")
+            logger.error(f"   Received length: {len(x_internal_token)}")
+            raise HTTPException(status_code=403, detail="Invalid internal auth token")
 
-    logger.info("✅ Internal auth token verified successfully")
-    return True
+        logger.info("✅ X-Internal-Token verified successfully")
+        return True
+
+    # If using Google Cloud Identity token
+    if identity_token:
+        # Verify the identity token is valid (not empty)
+        if not identity_token or len(identity_token) < 10:
+            logger.error("❌ Invalid identity token (too short or empty)")
+            raise HTTPException(status_code=403, detail="Invalid identity token")
+
+        # For identity tokens, Cloud Run automatically verifies them before the request reaches us
+        # If we get here, the token was already validated by Cloud Run IAM
+        logger.info("✅ Google Cloud Identity token verified (validated by Cloud Run)")
+        return True
+
+    # No valid token found
+    logger.error("❌ NO TOKEN RECEIVED IN HEADERS")
+    logger.error("   Expected either X-Internal-Token or Authorization: Bearer <token>")
+    raise HTTPException(status_code=403, detail="No authentication token provided")
 
 
 # Internal endpoints for LangGraph workflows

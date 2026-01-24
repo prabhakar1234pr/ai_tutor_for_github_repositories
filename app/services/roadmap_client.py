@@ -88,31 +88,28 @@ async def call_roadmap_service_incremental(project_id: str) -> dict:
 
     url = f"{settings.roadmap_service_url}/api/roadmap/incremental-generate"
 
-    # Get Google Cloud Identity token for service-to-service authentication
-    try:
-        identity_token = await _get_identity_token(settings.roadmap_service_url)
-        logger.info("🔐 Got Google Cloud Identity token for service-to-service auth")
-    except Exception as e:
-        logger.error(f"❌ Failed to get identity token: {e}")
-        # Fallback to internal auth token if identity token fails
-        if not settings.internal_auth_token:
-            raise ValueError(
-                "Failed to get identity token and INTERNAL_AUTH_TOKEN not configured"
-            ) from e
-        logger.warning("⚠️  Falling back to X-Internal-Token header")
-        identity_token = None
-
+    # Always use X-Internal-Token (more reliable than identity tokens)
     headers = {
         "Content-Type": "application/json",
     }
 
-    # Use identity token if available, otherwise fall back to X-Internal-Token
-    if identity_token:
-        headers["Authorization"] = f"Bearer {identity_token}"
-    elif settings.internal_auth_token:
+    if settings.internal_auth_token:
         headers["X-Internal-Token"] = settings.internal_auth_token
+        logger.info("🔐 Using X-Internal-Token for service-to-service auth")
     else:
-        raise ValueError("No authentication method available")
+        # Try identity token as last resort
+        try:
+            identity_token = await _get_identity_token(settings.roadmap_service_url)
+            if identity_token and len(identity_token) > 10:
+                headers["Authorization"] = f"Bearer {identity_token}"
+                logger.info("🔐 Using Google Cloud Identity token for service-to-service auth")
+            else:
+                raise ValueError("Identity token is empty or invalid")
+        except Exception as e:
+            logger.error(f"❌ Failed to get identity token: {e}")
+            raise ValueError(
+                "No authentication method available (neither INTERNAL_AUTH_TOKEN nor identity token)"
+            ) from e
     payload = {"project_id": project_id}
 
     logger.info("=" * 70)
@@ -214,31 +211,31 @@ async def call_roadmap_service_generate(
 
     url = f"{settings.roadmap_service_url}/api/roadmap/generate-internal"
 
-    # Get Google Cloud Identity token for service-to-service authentication
-    try:
-        identity_token = await _get_identity_token(settings.roadmap_service_url)
-        logger.info("🔐 Got Google Cloud Identity token for service-to-service auth")
-    except Exception as e:
-        logger.error(f"❌ Failed to get identity token: {e}")
-        # Fallback to internal auth token if identity token fails
-        if not settings.internal_auth_token:
-            raise ValueError(
-                "Failed to get identity token and INTERNAL_AUTH_TOKEN not configured"
-            ) from e
-        logger.warning("⚠️  Falling back to X-Internal-Token header")
-        identity_token = None
-
+    # Try to get Google Cloud Identity token, but always fall back to X-Internal-Token
+    # Identity tokens can fail in some environments, so we use X-Internal-Token as primary
     headers = {
         "Content-Type": "application/json",
     }
 
-    # Use identity token if available, otherwise fall back to X-Internal-Token
-    if identity_token:
-        headers["Authorization"] = f"Bearer {identity_token}"
-    elif settings.internal_auth_token:
+    # Always use X-Internal-Token for now (more reliable)
+    # Identity tokens require proper IAM setup and can fail silently
+    if settings.internal_auth_token:
         headers["X-Internal-Token"] = settings.internal_auth_token
+        logger.info("🔐 Using X-Internal-Token for service-to-service auth")
     else:
-        raise ValueError("No authentication method available")
+        # Try identity token as last resort
+        try:
+            identity_token = await _get_identity_token(settings.roadmap_service_url)
+            if identity_token and len(identity_token) > 10:
+                headers["Authorization"] = f"Bearer {identity_token}"
+                logger.info("🔐 Using Google Cloud Identity token for service-to-service auth")
+            else:
+                raise ValueError("Identity token is empty or invalid")
+        except Exception as e:
+            logger.error(f"❌ Failed to get identity token: {e}")
+            raise ValueError(
+                "No authentication method available (neither INTERNAL_AUTH_TOKEN nor identity token)"
+            ) from e
     payload = {
         "project_id": project_id,
         "github_url": github_url,
