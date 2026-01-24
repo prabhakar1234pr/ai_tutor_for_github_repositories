@@ -153,17 +153,61 @@ class EmbeddingService:
                     )
 
             # Initialize the embedding model
-            self._vertex_ai_client = TextEmbeddingModel.from_pretrained(
-                settings.embedding_model_name
-            )
-            logger.info(f"✅ Vertex AI embeddings initialized: {settings.embedding_model_name}")
+            logger.info(f"🔧 Loading embedding model: {settings.embedding_model_name}...")
+            try:
+                self._vertex_ai_client = TextEmbeddingModel.from_pretrained(
+                    settings.embedding_model_name
+                )
+                logger.info(f"✅ Vertex AI embeddings initialized: {settings.embedding_model_name}")
+            except Exception as model_error:
+                error_msg = str(model_error).lower()
+                logger.error(
+                    f"❌ Failed to load embedding model '{settings.embedding_model_name}': {model_error}"
+                )
+
+                # Provide helpful error messages based on error type
+                if "not found" in error_msg or "404" in error_msg or "does not exist" in error_msg:
+                    logger.error("=" * 70)
+                    logger.error("🔧 TROUBLESHOOTING: Model Not Found")
+                    logger.error("=" * 70)
+                    logger.error("Possible issues:")
+                    logger.error("1. Vertex AI API not enabled in your GCP project")
+                    logger.error(
+                        f"   → Enable at: https://console.cloud.google.com/apis/library/aiplatform.googleapis.com?project={project_id}"
+                    )
+                    logger.error("2. Model name might be incorrect or not available in your region")
+                    logger.error("   Valid model names:")
+                    logger.error("   - gemini-embedding-001 (recommended, latest)")
+                    logger.error("   - text-embedding-005 (English + code)")
+                    logger.error("   - text-multilingual-embedding-002 (multilingual)")
+                    logger.error("3. Check if the model is available in your GCP location")
+                    logger.error(f"   Current location: {settings.gcp_location}")
+                    logger.error("=" * 70)
+                elif "permission" in error_msg or "403" in error_msg:
+                    logger.error("=" * 70)
+                    logger.error("🔐 TROUBLESHOOTING: Permission Denied")
+                    logger.error("=" * 70)
+                    logger.error("The service account needs 'Vertex AI User' role")
+                    logger.error(
+                        f"   → Grant at: https://console.cloud.google.com/iam-admin/iam?project={project_id}"
+                    )
+                    logger.error("=" * 70)
+                else:
+                    logger.error(f"   Error details: {type(model_error).__name__}: {model_error}")
+
+                raise ValueError(
+                    f"Failed to load embedding model '{settings.embedding_model_name}'. "
+                    f"Error: {model_error}. See logs above for troubleshooting steps."
+                ) from model_error
         except ImportError as e:
             raise ImportError(
                 "google-cloud-aiplatform is required for Vertex AI embeddings. "
                 "Install it: pip install google-cloud-aiplatform"
             ) from e
         except Exception as e:
-            logger.error(f"Failed to initialize Vertex AI: {e}")
+            logger.error(
+                f"❌ Failed to initialize Vertex AI: {type(e).__name__}: {e}", exc_info=True
+            )
             raise
 
     def _init_openai(self):
