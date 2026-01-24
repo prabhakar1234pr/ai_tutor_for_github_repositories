@@ -75,8 +75,22 @@ async def call_roadmap_service_incremental(project_id: str) -> dict:
 
         async with httpx.AsyncClient(timeout=300.0) as client:
             logger.info("⏳ Waiting for roadmap service response...")
+            logger.info(f"📤 Sending request with headers: {dict(headers)}")
             response = await client.post(url, json=payload, headers=headers)
             logger.info(f"📥 Received response: Status {response.status_code}")
+
+            # Log response body for debugging 403 errors
+            if response.status_code == 403:
+                logger.error("=" * 70)
+                logger.error("❌ 403 FORBIDDEN - AUTH FAILED")
+                logger.error(f"   Request URL: {url}")
+                logger.error(f"   Request Headers: {dict(headers)}")
+                logger.error(f"   Response Status: {response.status_code}")
+                logger.error(f"   Response Body: {response.text}")
+                logger.error(
+                    f"   Token sent (first 30 chars): {settings.internal_auth_token[:30] if settings.internal_auth_token else 'None'}..."
+                )
+                logger.error("=" * 70)
 
             response.raise_for_status()
 
@@ -187,8 +201,22 @@ async def call_roadmap_service_generate(
 
         async with httpx.AsyncClient(timeout=300.0) as client:
             logger.info("⏳ Waiting for roadmap service response...")
+            logger.info(f"📤 Sending request with headers: {dict(headers)}")
             response = await client.post(url, json=payload, headers=headers)
             logger.info(f"📥 Received response: Status {response.status_code}")
+
+            # Log response body for debugging 403 errors
+            if response.status_code == 403:
+                logger.error("=" * 70)
+                logger.error("❌ 403 FORBIDDEN - AUTH FAILED")
+                logger.error(f"   Request URL: {url}")
+                logger.error(f"   Request Headers: {dict(headers)}")
+                logger.error(f"   Response Status: {response.status_code}")
+                logger.error(f"   Response Body: {response.text}")
+                logger.error(
+                    f"   Token sent (first 30 chars): {settings.internal_auth_token[:30] if settings.internal_auth_token else 'None'}..."
+                )
+                logger.error("=" * 70)
 
             response.raise_for_status()
 

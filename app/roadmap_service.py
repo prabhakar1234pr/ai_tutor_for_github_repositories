@@ -68,21 +68,39 @@ app.include_router(roadmap_gen_router, prefix="/api/roadmap", tags=["roadmap-gen
 # Internal auth dependency for service-to-service calls
 async def verify_internal_auth(request: Request):
     """Verify internal auth token for service-to-service calls."""
-    # Get the token from the header (case-insensitive)
-    x_internal_token = request.headers.get("X-Internal-Token") or request.headers.get(
-        "x-internal-token"
+    # Get the token from the header (try multiple variations)
+    # FastAPI/Starlette normalizes headers to lowercase, but we check both
+    x_internal_token = (
+        request.headers.get("X-Internal-Token")
+        or request.headers.get("x-internal-token")
+        or request.headers.get("X-INTERNAL-TOKEN")
     )
 
     logger.info("=" * 70)
     logger.info("🔐 INTERNAL AUTH VERIFICATION")
     logger.info(f"   Token received: {x_internal_token is not None}")
-    logger.info(
-        f"   Token value (first 20 chars): {x_internal_token[:20] if x_internal_token else 'None'}..."
-    )
+    if x_internal_token:
+        logger.info(f"   Token value (first 20 chars): {x_internal_token[:20]}...")
+        logger.info(f"   Token length: {len(x_internal_token)}")
+    else:
+        logger.error("   ❌ NO TOKEN RECEIVED IN HEADERS")
     logger.info(
         f"   Expected token (first 20 chars): {settings.internal_auth_token[:20] if settings.internal_auth_token else 'None'}..."
     )
-    logger.info(f"   All headers: {dict(request.headers)}")
+    logger.info(
+        f"   Expected token length: {len(settings.internal_auth_token) if settings.internal_auth_token else 0}"
+    )
+    logger.info(f"   All headers keys: {list(request.headers.keys())}")
+    # Log header values (but mask sensitive data)
+    header_dict = dict(request.headers)
+    if "x-internal-token" in header_dict or "X-Internal-Token" in header_dict:
+        token_key = "x-internal-token" if "x-internal-token" in header_dict else "X-Internal-Token"
+        masked_token = (
+            header_dict[token_key][:10] + "..." + header_dict[token_key][-10:]
+            if len(header_dict[token_key]) > 20
+            else "***"
+        )
+        logger.info(f"   Header {token_key}: {masked_token}")
     logger.info("=" * 70)
 
     if not settings.internal_auth_token:
