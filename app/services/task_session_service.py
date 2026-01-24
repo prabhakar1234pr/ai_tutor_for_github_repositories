@@ -48,9 +48,92 @@ class TaskSessionService:
         if not container_id:
             return {"success": False, "error": "Workspace has no container"}
 
+        # Try to get HEAD commit, if it fails with "not a git repository", clone the repo
         rev = self.git_service.git_rev_parse(container_id, "HEAD")
         if not rev.get("success"):
-            return {"success": False, "error": rev.get("error")}
+            error_msg = rev.get("error", "")
+            error_msg_lower = error_msg.lower()
+            logger.debug(f"Git rev-parse failed for container {container_id[:12]}: {error_msg}")
+
+            # Check if error is due to missing git repository
+            # Git error messages can vary: "not a git repository", "not a git repo",
+            # "fatal: not a git repository", etc.
+            is_not_git_repo = (
+                "not a git repository" in error_msg_lower or "not a git repo" in error_msg_lower
+            )
+
+            if is_not_git_repo:
+                logger.info(
+                    f"Git repository not found in container {container_id[:12]}, attempting to clone..."
+                )
+                # Get project info to clone the repository
+                workspace_full = (
+                    self.supabase.table("workspaces")
+                    .select("project_id")
+                    .eq("workspace_id", workspace_id)
+                    .execute()
+                )
+                if not workspace_full.data:
+                    return {"success": False, "error": "Workspace project not found"}
+
+                project_id = workspace_full.data[0].get("project_id")
+                project_response = (
+                    self.supabase.table("projects")
+                    .select("user_repo_url, github_access_token")
+                    .eq("project_id", project_id)
+                    .eq("user_id", user_id)
+                    .execute()
+                )
+                if not project_response.data:
+                    return {"success": False, "error": "Project not found"}
+
+                project = project_response.data[0]
+                repo_url = project.get("user_repo_url")
+                token = project.get("github_access_token")
+
+                if not repo_url:
+                    return {
+                        "success": False,
+                        "error": "Repository URL not found. Please complete Day 0 Task 2 first.",
+                    }
+
+                if not token:
+                    return {
+                        "success": False,
+                        "error": "GitHub token not configured. Please connect your GitHub account.",
+                    }
+
+                # Clone the repository
+                logger.info(
+                    f"Attempting to clone repository {repo_url[:50]}... into container {container_id[:12]}"
+                )
+                clone_result = self.git_service.clone_repository(
+                    container_id, repo_url, token=token
+                )
+                if clone_result.get("status") == "error":
+                    error_msg = clone_result.get("message", "Unknown error")
+                    logger.error(f"Clone failed for container {container_id[:12]}: {error_msg}")
+                    return {"success": False, "error": f"Failed to clone repository: {error_msg}"}
+
+                logger.info("Clone successful, verifying git repository...")
+                # Retry getting HEAD commit after cloning
+                rev = self.git_service.git_rev_parse(container_id, "HEAD")
+                if not rev.get("success"):
+                    error_msg = rev.get("error", "Unknown error")
+                    logger.error(
+                        f"Failed to get HEAD commit after cloning in container {container_id[:12]}: {error_msg}"
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Failed to get HEAD commit after cloning: {error_msg}",
+                    }
+
+                logger.info(
+                    f"Successfully cloned repository and verified HEAD commit: {rev.get('sha', 'unknown')[:7]}"
+                )
+            else:
+                # Other git errors
+                return {"success": False, "error": rev.get("error")}
 
         base_commit = rev.get("sha")
         now = datetime.now(UTC).isoformat()

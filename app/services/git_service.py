@@ -34,6 +34,7 @@ class GitService:
     ) -> dict[str, str]:
         """
         Clone repository into /workspace.
+        If workspace is not empty but not a git repository, cleans it before cloning.
 
         Returns:
             {"status": "cloned" | "already_cloned", "message": str}
@@ -58,15 +59,43 @@ class GitService:
         if exit_code != 0:
             return {"status": "error", "message": output}
         if "NOT_EMPTY" in output:
-            return {
-                "status": "error",
-                "message": "Workspace is not empty; cannot clone into /workspace",
-            }
+            # Workspace is not empty but also not a git repository (we checked above).
+            # We must not destroy user files. Move existing contents to a backup folder,
+            # then proceed to clone into /workspace (repo files will coexist with backup).
+            logger.info("Workspace is not empty; backing up existing contents before clone...")
+            backup_cmd = (
+                "backup_dir=/workspace/.gitguide_backup_$(date +%s); "
+                'mkdir -p "$backup_dir" && '
+                'backup_name=$(basename "$backup_dir"); '
+                "find /workspace -mindepth 1 -maxdepth 1 "
+                '! -name "$backup_name" '
+                '-exec mv -n {} "$backup_dir"/ \\; '
+                '&& echo "Backed up existing workspace contents to $backup_dir"'
+            )
+            exit_code, backup_output = self._exec(container_id, backup_cmd)
+            if exit_code != 0:
+                return {
+                    "status": "error",
+                    "message": f"Failed to backup workspace before cloning: {backup_output}",
+                }
 
-        cmd = f"git clone {shlex.quote(auth_url)} /workspace"
-        exit_code, output = self._exec(container_id, cmd)
+        # Clone into a temporary directory, then move contents to /workspace
+        # Git clone doesn't work well with . as target, so we clone to a temp dir first
+        temp_dir = "/tmp/git-clone-temp"
+        # Clone to temp directory
+        clone_cmd = f"rm -rf {temp_dir} && git clone {shlex.quote(auth_url)} {temp_dir}"
+        exit_code, output = self._exec(container_id, clone_cmd)
         if exit_code != 0:
             return {"status": "error", "message": output}
+
+        # Move all contents including hidden files using find
+        # This handles .git and other hidden files correctly
+        move_cmd = f"find {temp_dir} -mindepth 1 -maxdepth 1 -exec mv {{}} /workspace/ \\; && rm -rf {temp_dir}"
+        exit_code, output = self._exec(container_id, move_cmd)
+        if exit_code != 0:
+            # Clean up temp dir on failure
+            self._exec(container_id, f"rm -rf {temp_dir}")
+            return {"status": "error", "message": f"Failed to move cloned files: {output}"}
 
         return {"status": "cloned", "message": "Repository cloned successfully"}
 

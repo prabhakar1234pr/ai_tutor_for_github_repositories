@@ -78,14 +78,21 @@ def get_container_id(workspace_id: str, user_id: str, workspace_manager: Workspa
     if not container_id:
         raise HTTPException(status_code=400, detail="Workspace has no container")
 
-    # Check container is running
+    # Check container is running, start it if not
     status = workspace.container_status
     if status != "running":
-        raise HTTPException(
-            status_code=400, detail=f"Workspace container is not running (status: {status})"
-        )
+        logger.info(f"Container {container_id[:12]} is not running (status: {status}), starting...")
+        success = workspace_manager.start_workspace(workspace_id)
+        if not success:
+            raise HTTPException(
+                status_code=400, detail=f"Failed to start workspace container (status: {status})"
+            )
+        # Refresh workspace to get updated status
+        workspace = workspace_manager.get_workspace(workspace_id)
+        if not workspace or workspace.container_status != "running":
+            raise HTTPException(status_code=500, detail="Container failed to start")
 
-    return container_id
+    return workspace.container_id
 
 
 # Endpoints
