@@ -98,6 +98,14 @@ async def call_roadmap_service_incremental(project_id: str) -> dict:
         "X-Internal-Token": settings.internal_auth_token,
     }
 
+    # Get Google Cloud Identity Token for Cloud Run IAM authentication
+    try:
+        identity_token = await _get_identity_token(settings.roadmap_service_url)
+        headers["Authorization"] = f"Bearer {identity_token}"
+        logger.info(f"🔐 Using Google Cloud Identity Token (length: {len(identity_token)})")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not get identity token (local dev?): {e}")
+
     logger.info(f"🔐 Using X-Internal-Token (length: {len(settings.internal_auth_token)})")
     logger.info(f"🔐 Token (first 20 chars): {settings.internal_auth_token[:20]}...")
     payload = {"project_id": project_id}
@@ -218,6 +226,14 @@ async def call_roadmap_service_generate(
         "Content-Type": "application/json",
         "X-Internal-Token": settings.internal_auth_token,
     }
+
+    # Get Google Cloud Identity Token for Cloud Run IAM authentication
+    try:
+        identity_token = await _get_identity_token(settings.roadmap_service_url)
+        headers["Authorization"] = f"Bearer {identity_token}"
+        logger.info(f"🔐 Using Google Cloud Identity Token (length: {len(identity_token)})")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not get identity token (local dev?): {e}")
 
     logger.info(f"🔐 Using X-Internal-Token (length: {len(settings.internal_auth_token)})")
     logger.info(f"🔐 Token (first 20 chars): {settings.internal_auth_token[:20]}...")
