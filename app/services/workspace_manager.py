@@ -415,13 +415,31 @@ class WorkspaceManager:
         project = project_response.data[0]
         repo_url = project.get("user_repo_url")
         token = project.get("github_access_token")
-        if not repo_url or not token:
-            return {"success": False, "error": "Repository URL or GitHub token missing"}
+        if not repo_url:
+            return {"success": False, "error": "Repository URL missing"}
 
         git_service = GitService()
-        clone_result = git_service.clone_repository(workspace.container_id, repo_url, token=token)
+        clone_result = git_service.clone_repository(
+            workspace.container_id,
+            repo_url,
+            token=token or None,
+        )
         if clone_result.get("status") == "error":
-            return {"success": False, "error": clone_result.get("message", "Clone failed")}
+            msg = clone_result.get("message", "Clone failed")
+            lower = (msg or "").lower()
+            # If the repo is private, cloning without a token commonly fails with auth-like errors.
+            if not token and (
+                "authentication failed" in lower
+                or "could not read username" in lower
+                or "repository not found" in lower
+                or "access denied" in lower
+                or "permission denied" in lower
+            ):
+                return {
+                    "success": False,
+                    "error": "Repository requires GitHub token (private repo). Please connect GitHub (PAT) for this project.",
+                }
+            return {"success": False, "error": msg}
 
         config_result = git_service.configure_git_user(
             workspace.container_id, author_name, author_email

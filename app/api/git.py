@@ -124,6 +124,42 @@ def _get_container_id(
     return workspace.container_id
 
 
+def _maybe_auto_clone_repo(
+    *,
+    workspace_id: str,
+    user_id: str,
+    user_info: dict,
+    workspace_manager: WorkspaceManager,
+    git_service: GitService,
+    container_id: str,
+    git_error: str | None,
+) -> None:
+    """
+    If a git operation fails because the workspace isn't a git repo yet,
+    attempt to initialize (clone) the repo once.
+    """
+    err = (git_error or "").lower()
+    if "not a git repository" not in err:
+        return
+
+    author_name = user_info.get("name") or "GitGuide"
+    author_email = user_info.get("email") or "noreply@gitguide.local"
+    init = workspace_manager.initialize_git_repo(
+        workspace_id,
+        user_id,
+        author_name=author_name,
+        author_email=author_email,
+    )
+    if not init.get("success"):
+        raise HTTPException(status_code=400, detail=init.get("error", "Failed to clone repository"))
+
+    # Best-effort warmup: ensures status/branch metadata can be read immediately.
+    try:
+        git_service.git_status(container_id)
+    except Exception:
+        pass
+
+
 def _get_project_token(supabase: Client, project_id: str, user_id: str) -> str | None:
     response = (
         supabase.table("projects")
@@ -183,6 +219,17 @@ def get_status(
     git_service = GitService()
 
     result = git_service.git_status(container_id)
+    if not result.get("success"):
+        _maybe_auto_clone_repo(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            user_info=user_info,
+            workspace_manager=workspace_manager,
+            git_service=git_service,
+            container_id=container_id,
+            git_error=str(result.get("error") or ""),
+        )
+        result = git_service.git_status(container_id)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to get git status"))
 
@@ -514,6 +561,19 @@ def list_commits(
             container_id, range_spec=range_spec, max_count=max_count, show_all=show_all
         )
         if not result.get("success"):
+            _maybe_auto_clone_repo(
+                workspace_id=workspace_id,
+                user_id=user_id,
+                user_info=user_info,
+                workspace_manager=workspace_manager,
+                git_service=git_service,
+                container_id=container_id,
+                git_error=str(result.get("error") or ""),
+            )
+            result = git_service.git_log(
+                container_id, range_spec=range_spec, max_count=max_count, show_all=show_all
+            )
+        if not result.get("success"):
             logger.error(
                 f"Failed to get commits for workspace {workspace_id}: {result.get('error')}"
             )
@@ -572,6 +632,17 @@ def list_branches(
     git_service = GitService()
 
     result = git_service.git_list_branches(container_id, include_remote=include_remote)
+    if not result.get("success"):
+        _maybe_auto_clone_repo(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            user_info=user_info,
+            workspace_manager=workspace_manager,
+            git_service=git_service,
+            container_id=container_id,
+            git_error=str(result.get("error") or ""),
+        )
+        result = git_service.git_list_branches(container_id, include_remote=include_remote)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=result.get("error", "Failed to list branches"))
     return result
