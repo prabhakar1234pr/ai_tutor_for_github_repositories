@@ -240,8 +240,14 @@ async def fetch_repository_files(github_url: str) -> list[dict[str, str]]:
         )
 
         # Optimize: Fetch files in parallel using asyncio.gather
-        async def fetch_file_with_metadata(file_path: str, blob_url: str) -> dict[str, str]:
-            """Fetch a single file and return its metadata"""
+        async def fetch_file_with_metadata(file_path: str, blob_url: str) -> dict[str, str] | None:
+            """Fetch a single file and return its metadata.
+
+            Important: do NOT raise here. If a single fetch raises and bubbles up,
+            asyncio.gather() will cancel remaining tasks and the AsyncClient context
+            may close while other tasks are still pending, causing the noisy cascade:
+            "Cannot send a request, as the client has been closed."
+            """
             try:
                 content = await fetch_blob(client, blob_url, headers)
                 language = detect_language(file_path)
@@ -253,7 +259,7 @@ async def fetch_repository_files(github_url: str) -> list[dict[str, str]]:
                 }
             except Exception as e:
                 logger.error(f"❌ Failed to fetch file {file_path}: {e}")
-                raise
+                return None
 
         # Fetch all files in parallel (respecting semaphore limit)
         logger.debug(f"🚀 Starting parallel fetch of {len(tasks)} files")
@@ -261,10 +267,12 @@ async def fetch_repository_files(github_url: str) -> list[dict[str, str]]:
             fetch_file_with_metadata(file_path, blob_url) for file_path, blob_url in tasks
         ]
 
-        fetched_results = await asyncio.gather(*fetch_tasks)
+        fetched_results = await asyncio.gather(*fetch_tasks, return_exceptions=False)
 
         # Process results and check limits
         for result in fetched_results:
+            if result is None:
+                continue
             content_bytes = result["size_bytes"]
             total_bytes += content_bytes
 

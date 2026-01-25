@@ -1,0 +1,42 @@
+# Example Nginx configuration for preview proxy
+# Place this in /etc/nginx/sites-available/gitguide-workspaces
+# Then symlink: sudo ln -s /etc/nginx/sites-available/gitguide-workspaces /etc/nginx/sites-enabled/
+
+server {
+    listen 80;
+    server_name workspaces.yourdomain.com;  # Replace with your domain
+
+    # Redirect HTTP to HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name workspaces.yourdomain.com;  # Replace with your domain
+
+    # SSL certificates (use Let's Encrypt)
+    ssl_certificate /etc/letsencrypt/live/workspaces.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/workspaces.yourdomain.com/privkey.pem;
+
+    # Proxy all requests to FastAPI backend
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        # Important: Pass headers so backend can detect base URL
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+
+        # WebSocket support for terminal
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Timeouts for long-running requests
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+}
