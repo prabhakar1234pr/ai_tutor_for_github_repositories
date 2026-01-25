@@ -114,6 +114,34 @@ class DockerClient:
             logger.error(f"Image not found: {image}")
             raise ValueError(f"Docker image not found: {image}") from e
         except APIError as e:
+            error_msg = str(e)
+            # Handle name conflicts by removing existing container and retrying once
+            if "already in use" in error_msg or "Conflict" in error_msg:
+                logger.warning(
+                    f"Container name conflict for {name}, attempting to remove existing container"
+                )
+                try:
+                    existing = client.containers.get(name)
+                    existing.remove(force=True)
+                    logger.info(f"Removed conflicting container: {name}")
+                    container = client.containers.create(
+                        image=image,
+                        name=name,
+                        detach=True,
+                        working_dir="/workspace",
+                        volumes=volumes,
+                        ports=port_bindings,
+                        mem_limit=memory_limit,
+                        cpu_period=DEFAULT_CPU_PERIOD,
+                        cpu_quota=cpu_quota,
+                        network_mode="bridge",
+                    )
+                    logger.info(f"Container created after conflict: {name} ({container.short_id})")
+                    return container.id, "created"
+                except Exception as retry_error:
+                    logger.error(
+                        f"Failed to recreate container {name} after conflict: {retry_error}"
+                    )
             logger.error(f"Failed to create container {name}: {e}")
             raise RuntimeError(f"Failed to create container: {e}") from e
 
