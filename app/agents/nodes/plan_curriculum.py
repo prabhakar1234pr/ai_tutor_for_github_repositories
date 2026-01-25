@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from app.agents.prompts import CURRICULUM_PLANNING_PROMPT
+from app.agents.pydantic_models import CurriculumModel
 from app.agents.state import (
     ConceptMetadata,
     ConceptStatus,
@@ -24,8 +25,7 @@ from app.agents.state import (
     DayTheme,
     RoadmapAgentState,
 )
-from app.services.gemini_service import get_gemini_service
-from app.utils.json_parser import parse_llm_json_response_async
+from app.agents.utils.pydantic_ai_client import run_gemini_structured
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +79,7 @@ async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentStat
         last_day_number=last_day_number,
     )
 
-    # Call Gemini LLM for curriculum planning
     logger.info("🤖 Initializing Gemini for curriculum planning...")
-    gemini_service = get_gemini_service()
     system_prompt = (
         "You are an expert curriculum designer. "
         "Return ONLY valid JSON object with days, concepts, and dependency_graph. "
@@ -93,25 +91,12 @@ async def plan_and_save_curriculum(state: RoadmapAgentState) -> RoadmapAgentStat
         logger.info(f"   📋 Target: {target_days} days, Skill Level: {skill_level}")
         logger.debug("   📤 Sending curriculum planning request to Gemini...")
 
-        # Use async version with rate limiting
-        llm_response = await gemini_service.generate_response_async(
-            user_query=prompt,
+        curriculum_model = await run_gemini_structured(
+            user_prompt=prompt,
             system_prompt=system_prompt,
-            context="",  # Context already in prompt
+            output_type=CurriculumModel,
         )
-
-        logger.info(f"   ✅ Gemini curriculum response received ({len(llm_response)} chars)")
-        logger.debug(f"   LLM response length: {len(llm_response)} chars")
-
-        # Parse JSON response using async parser (supports sanitizer)
-        try:
-            curriculum_dict = await parse_llm_json_response_async(
-                llm_response, expected_type="object"
-            )
-        except Exception as parse_error:
-            logger.error(f"❌ Failed to parse JSON response: {parse_error}")
-            logger.debug(f"   Response text: {llm_response[:500]}")
-            raise ValueError(f"Invalid JSON response from LLM: {parse_error}") from parse_error
+        curriculum_dict = curriculum_model.model_dump()
 
         # Validate and build curriculum structure
         curriculum = _validate_and_build_curriculum(curriculum_dict, last_day_number)

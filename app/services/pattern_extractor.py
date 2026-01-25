@@ -6,8 +6,8 @@ Extracts verification patterns from test files using LLM.
 import logging
 from typing import Any
 
-from app.services.groq_service import get_groq_service
-from app.utils.json_parser import parse_llm_json_response_async
+from app.agents.pydantic_models import VerificationPatternsModel
+from app.agents.utils.pydantic_ai_client import run_groq_structured
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,8 @@ class PatternExtractor:
     """
 
     def __init__(self):
-        self.groq_service = get_groq_service()
+        # Structured output calls are created per request via pydantic-ai.
+        pass
 
     async def extract_patterns_from_test(
         self,
@@ -66,18 +67,12 @@ class PatternExtractor:
         )
 
         try:
-            # Call LLM (small call, fast response)
-            response = await self.groq_service.generate_response_async(
-                user_query=prompt,
+            patterns_model = await run_groq_structured(
+                user_prompt=prompt,
                 system_prompt=system_prompt,
-                context="",
+                output_type=VerificationPatternsModel,
             )
-
-            # Parse JSON response
-            patterns = await parse_llm_json_response_async(
-                response,
-                expected_type="object",
-            )
+            patterns = patterns_model.model_dump()
 
             logger.info(
                 f"✅ Extracted patterns: {len(patterns.get('required_functions', []))} functions, "

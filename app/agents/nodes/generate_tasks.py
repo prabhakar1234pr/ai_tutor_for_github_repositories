@@ -8,16 +8,16 @@ import logging
 from typing import Any
 
 from app.agents.prompts.task_generation import TASK_GENERATION_PROMPT
+from app.agents.pydantic_models import TasksBundleModel
 from app.agents.state import RoadmapAgentState
 from app.agents.utils.memory_context import (
     build_structured_memory_context,
     format_memory_context_for_prompt,
 )
+from app.agents.utils.pydantic_ai_client import run_gemini_structured
 from app.agents.utils.repo_context import build_notebook_repo_context_for_task_generation
 from app.agents.utils.retry_wrapper import generate_with_retry
 from app.core.supabase_client import get_supabase_client
-from app.services.gemini_service import get_gemini_service
-from app.utils.json_parser import parse_llm_json_response_async
 from app.utils.type_validator import validate_and_normalize_tasks
 
 logger = logging.getLogger(__name__)
@@ -179,7 +179,7 @@ def _detect_project_language(notebook_repo_context: dict[str, Any], test_structu
     return "javascript"
 
 
-async def generate_tasks_with_tests(state: RoadmapAgentState) -> RoadmapAgentState:
+async def generate_tasks(state: RoadmapAgentState) -> RoadmapAgentState:
     """
     Generate tasks with test files for the concept that was just generated.
 
@@ -214,10 +214,8 @@ async def generate_tasks_with_tests(state: RoadmapAgentState) -> RoadmapAgentSta
     concept_metadata = concepts_dict.get(concept_id, {})
     concept_title = concept_metadata.get("title", concept_id)
 
-    logger.info(
-        f"🤖 Generating tasks with tests using Gemini for concept: {concept_title} ({concept_id})"
-    )
-    logger.info("   ✨ Using Gemini (Vertex AI) for task and test file generation")
+    logger.info(f"🤖 Generating tasks using Gemini for concept: {concept_title} ({concept_id})")
+    logger.info("   ✨ Using Gemini (Vertex AI) for task generation (descriptions only)")
 
     # Get project info to access user_repo_url (notebook repo) and github_url (textbook repo fallback)
     supabase = get_supabase_client()
@@ -283,29 +281,18 @@ async def generate_tasks_with_tests(state: RoadmapAgentState) -> RoadmapAgentSta
             },
         }
 
-    # Format existing test structure for prompt
-    test_structure = notebook_repo_context.get("existing_test_structure", {})
-    test_structure_str = (
-        f"Framework: {test_structure.get('framework', 'none')}\n"
-        f"Test directories: {', '.join(test_structure.get('test_directories', []))}\n"
-        f"Test command: {test_structure.get('test_command', 'Not set')}\n"
-        f"Config files: {', '.join(test_structure.get('config_files', []))}\n"
-        f"Has test setup: {test_structure.get('has_test_setup', False)}"
-    )
-
-    # Detect project language for validation
-    project_language = _detect_project_language(notebook_repo_context, test_structure_str)
+    # Detect project language (used to tailor task instructions)
+    project_language = _detect_project_language(notebook_repo_context, "")
     logger.info(f"📋 Detected project language for task generation: {project_language}")
 
     # Generate tasks with retry
     async def _generate():
-        return await _llm_generate_tasks_with_tests(
+        return await _llm_generate_tasks(
             concept_id=concept_id,
             concept_metadata=concept_metadata,
             skill_level=skill_level,
             memory_context_str=memory_context_str,
             notebook_repo_context=notebook_repo_context,
-            test_structure_str=test_structure_str,
             project_language=project_language,
         )
 
@@ -322,39 +309,12 @@ async def generate_tasks_with_tests(state: RoadmapAgentState) -> RoadmapAgentSta
         # Validate basic task fields (title, description, etc.)
         tasks_validated = validate_and_normalize_tasks(tasks_raw)
 
-        # Merge test file fields from raw tasks back into validated tasks
-        # (validate_and_normalize_tasks doesn't preserve test_file_* fields)
-        tasks_with_tests = []
-        for idx, validated_task in enumerate(tasks_validated):
-            raw_task = (
-                tasks_raw[idx] if idx < len(tasks_raw) and isinstance(tasks_raw[idx], dict) else {}
-            )
-            # Merge validated fields with test file fields from raw task
-            task_with_tests = {
-                **validated_task,
-                "test_file_path": raw_task.get("test_file_path"),
-                "test_file_content": raw_task.get("test_file_content"),
-                "test_command": raw_task.get("test_command"),
-            }
-
-            # Validate test file matches project language
-            validation_error = _validate_test_language_match(
-                task_with_tests, project_language, concept_title
-            )
-            if validation_error:
-                logger.error(f"❌ Task {idx + 1} language mismatch: {validation_error}")
-                # Fix the test file to match language
-                task_with_tests = _fix_test_language_mismatch(task_with_tests, project_language)
-                logger.info(f"✅ Fixed test file for task {idx + 1} to match {project_language}")
-
-            tasks_with_tests.append(task_with_tests)
-
         # Save tasks to database
         database_concept_id = concept_ids_map.get(concept_id)
-        if database_concept_id and tasks_with_tests:
-            await _save_tasks_to_db(database_concept_id, tasks_with_tests)
+        if database_concept_id and tasks_validated:
+            await _save_tasks_to_db(database_concept_id, tasks_validated)
             logger.info(
-                f"✅ Generated and saved {len(tasks_with_tests)} tasks with Gemini for concept: {concept_title}"
+                f"✅ Generated and saved {len(tasks_validated)} tasks with Gemini for concept: {concept_title}"
             )
         else:
             logger.warning(f"No database concept_id found for {concept_id}, tasks not saved")
@@ -364,13 +324,12 @@ async def generate_tasks_with_tests(state: RoadmapAgentState) -> RoadmapAgentSta
     return state
 
 
-async def _llm_generate_tasks_with_tests(
+async def _llm_generate_tasks(
     concept_id: str,
     concept_metadata: dict[str, Any],
     skill_level: str,
     memory_context_str: str,
     notebook_repo_context: dict[str, Any],
-    test_structure_str: str,
     project_language: str,
 ) -> dict[str, Any]:
     """
@@ -391,8 +350,6 @@ async def _llm_generate_tasks_with_tests(
     Raises:
         JSONParseError: If LLM response cannot be parsed
     """
-    gemini_service = get_gemini_service()
-
     concept_title = concept_metadata.get("title", concept_id)
     concept_objective = concept_metadata.get("objective", "")
 
@@ -404,27 +361,18 @@ async def _llm_generate_tasks_with_tests(
         project_language=project_language,
         notebook_repo_structure=notebook_repo_context.get("repo_structure", ""),
         notebook_repo_code_context=notebook_repo_context.get("repo_code_context", ""),
-        existing_test_structure=test_structure_str,
         memory_context=memory_context_str or "No previous learning context.",
     )
 
     logger.info(f"   📤 Sending task generation request to Gemini for '{concept_title}'...")
-    logger.debug("   🎯 Generating tasks + tests with Gemini (Vertex AI)...")
+    logger.debug("   🎯 Generating tasks (no tests) with Gemini (Vertex AI)...")
 
-    response = await gemini_service.generate_response_async(
-        user_query=prompt,
-        system_prompt="You are an expert technical educator. Return ONLY valid JSON object, no markdown or extra text.",
-        context="",
+    bundle = await run_gemini_structured(
+        user_prompt=prompt,
+        system_prompt="You are an expert technical educator.",
+        output_type=TasksBundleModel,
     )
-
-    logger.info(f"   ✅ Gemini response received for '{concept_title}' ({len(response)} chars)")
-
-    # Parse the response
-    result_data = await parse_llm_json_response_async(response, expected_type="object")
-
-    logger.debug(f"   ✅ Gemini response parsed for '{concept_title}'")
-
-    return result_data
+    return bundle.model_dump()
 
 
 async def _save_tasks_to_db(
@@ -432,11 +380,11 @@ async def _save_tasks_to_db(
     tasks: list[dict[str, Any]],
 ) -> None:
     """
-    Save generated tasks with test files to database.
+    Save generated tasks (no tests) to database.
 
     Args:
         database_concept_id: Database concept ID
-        tasks: List of task dicts with test file information
+        tasks: List of task dicts
     """
     from app.core.supabase_client import get_supabase_client
 
@@ -457,10 +405,7 @@ async def _save_tasks_to_db(
                         "difficulty": str(task.get("difficulty", "medium")),
                         "hints": task.get("hints", []),
                         "solution": task.get("solution"),
-                        "test_file_path": task.get("test_file_path"),
-                        "test_file_content": task.get("test_file_content"),
-                        "test_command": task.get("test_command"),
-                        "verification_type": "test_and_llm",
+                        "verification_type": "llm",
                         "generated_status": "generated",
                     }
                 )

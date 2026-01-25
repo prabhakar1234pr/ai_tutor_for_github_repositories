@@ -11,10 +11,10 @@ but should not be used in new code.
 
 import logging
 
+from app.agents.pydantic_models import DaySummaryModel
 from app.agents.state import RoadmapAgentState
+from app.agents.utils.pydantic_ai_client import run_groq_structured
 from app.core.supabase_client import get_supabase_client
-from app.services.groq_service import get_groq_service
-from app.utils.json_parser import parse_llm_json_response_async
 
 logger = logging.getLogger(__name__)
 
@@ -162,21 +162,18 @@ async def create_day_summary(state: RoadmapAgentState) -> RoadmapAgentState:
             tasks_list=tasks_list_str,
         )
 
-        groq_service = get_groq_service()
         system_prompt = (
             "You are an expert educator creating learning summaries. "
             "Return ONLY valid JSON object, no markdown, no extra text."
         )
 
         logger.debug("   Calling LLM to generate day summary...")
-        llm_response = await groq_service.generate_response_async(
-            user_query=prompt,
+        summary_model = await run_groq_structured(
+            user_prompt=prompt,
             system_prompt=system_prompt,
-            context="",
+            output_type=DaySummaryModel,
         )
-
-        # Parse JSON response
-        summary_data = await parse_llm_json_response_async(llm_response, expected_type="object")
+        summary_data = summary_model.model_dump()
 
         # Extract summary fields
         summary_text = summary_data.get("summary_text", "")

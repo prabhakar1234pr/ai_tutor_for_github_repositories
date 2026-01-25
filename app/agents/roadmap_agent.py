@@ -23,10 +23,9 @@ from typing import Literal
 from langgraph.graph import END, StateGraph
 
 from app.agents.nodes.analyze_repo import analyze_repository
-from app.agents.nodes.extract_patterns import extract_patterns_from_tests
 from app.agents.nodes.fetch_context import fetch_project_context
 from app.agents.nodes.generate_content import generate_concept_content
-from app.agents.nodes.generate_tasks import generate_tasks_with_tests
+from app.agents.nodes.generate_tasks import generate_tasks
 from app.agents.nodes.memory_context import build_memory_context
 from app.agents.nodes.plan_curriculum import plan_and_save_curriculum
 from app.agents.nodes.save_to_db import (
@@ -202,8 +201,7 @@ def build_roadmap_graph() -> StateGraph:
     # Note: Day 0 is handled separately via API endpoint (initialize-day0)
     workflow.add_node("build_memory_context", build_memory_context)
     workflow.add_node("generate_concept_content", generate_concept_content)
-    workflow.add_node("generate_tasks_with_tests", generate_tasks_with_tests)
-    workflow.add_node("extract_patterns_from_tests", extract_patterns_from_tests)
+    workflow.add_node("generate_tasks", generate_tasks)
     workflow.add_node("mark_concept_complete", mark_concept_complete)
 
     # ===== EDGES =====
@@ -229,9 +227,8 @@ def build_roadmap_graph() -> StateGraph:
 
     # Content generation loop (concept-level)
     workflow.add_edge("build_memory_context", "generate_concept_content")
-    workflow.add_edge("generate_concept_content", "generate_tasks_with_tests")
-    workflow.add_edge("generate_tasks_with_tests", "extract_patterns_from_tests")
-    workflow.add_edge("extract_patterns_from_tests", "mark_concept_complete")
+    workflow.add_edge("generate_concept_content", "generate_tasks")
+    workflow.add_edge("generate_tasks", "mark_concept_complete")
 
     # After marking concept complete, check if more concepts needed
     workflow.add_conditional_edges(

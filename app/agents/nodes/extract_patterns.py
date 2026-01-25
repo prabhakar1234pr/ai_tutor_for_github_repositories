@@ -22,7 +22,7 @@ async def extract_patterns_from_tests(state: RoadmapAgentState) -> RoadmapAgentS
     3. Updates tasks in database with patterns
     4. Updates state
 
-    Runs after generate_tasks_with_tests.
+    Runs after generate_tasks.
 
     Args:
         state: Current agent state

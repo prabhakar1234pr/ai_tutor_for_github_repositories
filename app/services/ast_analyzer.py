@@ -213,7 +213,7 @@ class _PythonASTVisitor(ast.NodeVisitor):
         """Visit class definitions."""
         methods = []
         for item in node.body:
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
                 methods.append(item.name)
 
         self.classes.append(

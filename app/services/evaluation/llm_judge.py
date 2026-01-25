@@ -5,10 +5,15 @@ Uses Groq free tier (Llama models) to judge curriculum, concepts, content, and t
 
 import logging
 
+from app.agents.pydantic_models import (
+    ConceptsJudgmentModel,
+    ContentAndTasksJudgmentModel,
+    CurriculumJudgmentModel,
+    DayOverallJudgmentModel,
+)
+from app.agents.utils.pydantic_ai_client import run_groq_structured
 from app.config import settings
 from app.core.supabase_client import get_supabase_client
-from app.services.groq_service import get_groq_service
-from app.utils.json_parser import parse_llm_json_response_async
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +269,6 @@ class LLMJudge:
     def __init__(self):
         if not settings.judge_enabled:
             logger.debug("LLM-as-Judge is disabled")
-        self.groq = get_groq_service()
         self.judge_model = settings.judge_model
         self.supabase = get_supabase_client()
 
@@ -308,23 +312,14 @@ Your honesty is essential - lenient scores will prevent effective prompt optimiz
 Return ONLY valid JSON object, no markdown, no explanations."""
 
             logger.debug("   Calling LLM to judge curriculum...")
-            response = await self.groq.generate_response_async(
-                user_query=prompt,
+            scores_model = await run_groq_structured(
+                user_prompt=prompt,
                 system_prompt=system_prompt,
-                context="",
+                output_type=CurriculumJudgmentModel,
             )
-
-            scores = await parse_llm_json_response_async(response, expected_type="object")
-
+            scores = scores_model.model_dump()
             logger.info(f"   ✅ Curriculum judged: Overall={scores.get('overall_score', 0):.1f}")
-
-            return {
-                "progression_score": float(scores.get("progression_score", 0)),
-                "skill_level_match_score": float(scores.get("skill_level_match_score", 0)),
-                "completeness_score": float(scores.get("completeness_score", 0)),
-                "coherence_score": float(scores.get("coherence_score", 0)),
-                "overall_score": float(scores.get("overall_score", 0)),
-            }
+            return {k: float(v) for k, v in scores.items()}
 
         except Exception as e:
             logger.error(f"❌ Curriculum judgment failed: {e}", exc_info=True)
@@ -379,23 +374,14 @@ Your honesty is essential - lenient scores will prevent effective prompt optimiz
 Return ONLY valid JSON object, no markdown, no explanations."""
 
             logger.debug("   Calling LLM to judge concepts...")
-            response = await self.groq.generate_response_async(
-                user_query=prompt,
+            scores_model = await run_groq_structured(
+                user_prompt=prompt,
                 system_prompt=system_prompt,
-                context="",
+                output_type=ConceptsJudgmentModel,
             )
-
-            scores = await parse_llm_json_response_async(response, expected_type="object")
-
+            scores = scores_model.model_dump()
             logger.info(f"   ✅ Concepts judged: Overall={scores.get('overall_score', 0):.1f}")
-
-            return {
-                "appropriateness_score": float(scores.get("appropriateness_score", 0)),
-                "progression_score": float(scores.get("progression_score", 0)),
-                "clarity_score": float(scores.get("clarity_score", 0)),
-                "count_score": float(scores.get("count_score", 0)),
-                "overall_score": float(scores.get("overall_score", 0)),
-            }
+            return {k: float(v) for k, v in scores.items()}
 
         except Exception as e:
             logger.error(f"❌ Concepts judgment failed: {e}", exc_info=True)
@@ -456,23 +442,22 @@ Your honesty is essential - lenient scores will prevent effective prompt optimiz
 Return ONLY valid JSON object, no markdown, no explanations."""
 
             logger.debug("   Calling LLM to judge content and tasks...")
-            response = await self.groq.generate_response_async(
-                user_query=prompt,
+            scores_model = await run_groq_structured(
+                user_prompt=prompt,
                 system_prompt=system_prompt,
-                context="",
+                output_type=ContentAndTasksJudgmentModel,
             )
-
-            scores = await parse_llm_json_response_async(response, expected_type="object")
+            scores = scores_model.model_dump()
 
             # Combine LLM scores with calculated scores
             result = {
                 "content_quality_score": float(scores.get("content_quality_score", 0)),
                 "task_quality_score": float(scores.get("task_quality_score", 0)),
                 "task_verifiability_score": float(
-                    scores.get("task_verifiability_score", verifiability_score)
+                    scores.get("task_verifiability_score") or verifiability_score
                 ),
                 "difficulty_progression_score": float(
-                    scores.get("difficulty_progression_score", progression_score)
+                    scores.get("difficulty_progression_score") or progression_score
                 ),
             }
             result["overall_score"] = sum(result.values()) / len(result)
@@ -546,23 +531,14 @@ Your honesty is essential - lenient scores will prevent effective prompt optimiz
 Return ONLY valid JSON object, no markdown, no explanations."""
 
             logger.debug("   Calling LLM to judge day overall...")
-            response = await self.groq.generate_response_async(
-                user_query=prompt,
+            scores_model = await run_groq_structured(
+                user_prompt=prompt,
                 system_prompt=system_prompt,
-                context="",
+                output_type=DayOverallJudgmentModel,
             )
-
-            scores = await parse_llm_json_response_async(response, expected_type="object")
-
+            scores = scores_model.model_dump()
             logger.info(f"   ✅ Day overall judged: Overall={scores.get('overall_score', 0):.1f}")
-
-            return {
-                "coherence_score": float(scores.get("coherence_score", 0)),
-                "completeness_score": float(scores.get("completeness_score", 0)),
-                "time_estimates_score": float(scores.get("time_estimates_score", 0)),
-                "continuity_score": float(scores.get("continuity_score", 0)),
-                "overall_score": float(scores.get("overall_score", 0)),
-            }
+            return {k: float(v) for k, v in scores.items()}
 
         except Exception as e:
             logger.error(f"❌ Day overall judgment failed: {e}", exc_info=True)

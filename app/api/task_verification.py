@@ -6,6 +6,7 @@ Uses GROQ_API_KEY2 for higher token limits.
 
 import logging
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from supabase import Client
@@ -13,6 +14,7 @@ from supabase import Client
 from app.config import settings
 from app.core.supabase_client import get_supabase_client
 from app.services.git_service import GitService
+from app.services.github_service import extract_repo_info
 from app.services.verification_agent import VerificationAgent
 from app.services.workspace_manager import WorkspaceManager
 from app.utils.clerk_auth import verify_clerk_token
@@ -116,7 +118,7 @@ async def verify_task(
         # Verify task belongs to user's project
         concept_response = (
             supabase.table("concepts")
-            .select("concept_id, day_id, order_index")
+            .select("concept_id, day_id, order_index, title, description")
             .eq("concept_id", task["concept_id"])
             .execute()
         )
@@ -131,7 +133,7 @@ async def verify_task(
 
         day_response = (
             supabase.table("roadmap_days")
-            .select("project_id, day_number")
+            .select("project_id, day_number, theme, description")
             .eq("day_id", current_day_id)
             .execute()
         )
@@ -141,6 +143,9 @@ async def verify_task(
 
         day = day_response.data[0]
         project_id = day["project_id"]
+        day_number = day.get("day_number")
+        day_theme = day.get("theme")
+        day_description = day.get("description")
 
         project_response = (
             supabase.table("projects")
@@ -181,7 +186,35 @@ async def verify_task(
         except Exception as e:
             logger.warning(f"Could not get task session base_commit: {e}")
 
-        # Get head commit (current HEAD)
+        async def _get_remote_head_commit_sha(repo_url: str) -> str | None:
+            """
+            Get the latest commit SHA for the repo's default branch via GitHub API.
+            This avoids requiring Docker access from the API container (Cloud Run-safe).
+            """
+            try:
+                owner, repo = extract_repo_info(repo_url)
+                headers = {"Accept": "application/vnd.github.v3+json"}
+                if github_token:
+                    headers["Authorization"] = f"token {github_token}"
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    repo_resp = await client.get(
+                        f"https://api.github.com/repos/{owner}/{repo}", headers=headers
+                    )
+                    repo_resp.raise_for_status()
+                    default_branch = repo_resp.json().get("default_branch")
+                    if not default_branch:
+                        return None
+                    commit_resp = await client.get(
+                        f"https://api.github.com/repos/{owner}/{repo}/commits/{default_branch}",
+                        headers=headers,
+                    )
+                    commit_resp.raise_for_status()
+                    return commit_resp.json().get("sha")
+            except Exception as e:
+                logger.warning(f"Could not fetch remote HEAD from GitHub: {e}")
+                return None
+
+        # Get head commit (prefer local workspace HEAD; fall back to GitHub default branch HEAD)
         head_commit = None
         try:
             git_service = GitService()
@@ -194,18 +227,23 @@ async def verify_task(
             logger.warning(f"Error getting HEAD commit: {e}")
 
         if not head_commit:
-            raise HTTPException(status_code=400, detail="Could not determine current commit (HEAD)")
+            head_commit = await _get_remote_head_commit_sha(repo_url)
+
+        if not head_commit:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Could not determine current commit (HEAD). "
+                    "Workspace git is unavailable and GitHub HEAD could not be fetched."
+                ),
+            )
 
         # Use base_commit if available, otherwise use HEAD~1 as fallback
         if not base_commit:
-            logger.info("No base_commit found, using HEAD~1 as fallback")
-            rev_result = git_service.git_rev_parse(workspace.container_id, "HEAD~1")
-            if rev_result.get("success"):
-                base_commit = rev_result.get("sha")
-            else:
-                # If no parent commit, use HEAD itself (first commit)
-                base_commit = head_commit
-                logger.warning("No parent commit found, using HEAD as base_commit")
+            # If we don't have a task-session base commit, we cannot reliably compute HEAD~1
+            # without local git access; fall back to head_commit (diff may be empty).
+            base_commit = head_commit
+            logger.warning("No base_commit found; using head_commit as base_commit fallback")
 
         # Extract task description and requirements
         task_description = task.get("description", "")
@@ -420,6 +458,11 @@ async def verify_task(
             additional_context={
                 "task_title": task.get("title", ""),
                 "task_type": task.get("task_type", ""),
+                "day_number": day_number,
+                "day_theme": day_theme,
+                "day_description": day_description,
+                "concept_title": concept.get("title", ""),
+                "concept_description": concept.get("description", ""),
                 "previous_concept_summaries": previous_concept_summaries,
                 "previous_task_descriptions": previous_task_descriptions,
             },
@@ -565,6 +608,14 @@ async def _update_memory_ledger_on_task_pass(
     For agent-based system, this is simplified since we don't have detailed AST analysis.
     """
     try:
+        # Your current `concepts` schema (per provided DDL) does NOT include
+        # `files_touched` or `skills_unlocked`. Skip this step to avoid noisy DB errors.
+        # (Verification already succeeded; this is only a best-effort enrichment.)
+        logger.debug(
+            "Skipping concept memory ledger update (concepts.files_touched/skills_unlocked not in schema)"
+        )
+        return
+
         # For agent system, we don't have detailed file/skill extraction
         # This can be enhanced later if needed
         files_touched = evidence.get("changed_files", [])

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.agents.pydantic_models import VerificationPatternsModel
 from app.services.pattern_extractor import PatternExtractor
 
 
@@ -45,28 +46,21 @@ def test_subtract_function():
             "forbidden_patterns": [],
         }
 
-        with patch.object(
-            self.extractor.groq_service,
-            "generate_response_async",
+        with patch(
+            "app.services.pattern_extractor.run_groq_structured",
             new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = str(mock_response).replace("'", '"')
+        ) as mock_run:
+            mock_run.return_value = VerificationPatternsModel.model_validate(mock_response)
 
-            with patch(
-                "app.utils.json_parser.parse_llm_json_response_async",
-                new_callable=AsyncMock,
-            ) as mock_parse:
-                mock_parse.return_value = mock_response
+            result = await self.extractor.extract_patterns_from_test(
+                test_file_content=test_content,
+                test_file_path="tests/test_calculator.py",
+                language="python",
+            )
 
-                result = await self.extractor.extract_patterns_from_test(
-                    test_file_content=test_content,
-                    test_file_path="tests/test_calculator.py",
-                    language="python",
-                )
-
-                assert result["success"]
-                assert "patterns" in result
-                assert len(result["patterns"]["required_functions"]) == 2
+            assert result["success"]
+            assert "patterns" in result
+            assert len(result["patterns"]["required_functions"]) == 2
 
     @pytest.mark.asyncio
     async def test_extract_patterns_from_test_javascript(self):
@@ -94,27 +88,20 @@ test('subtract function', () => {
             "forbidden_patterns": [],
         }
 
-        with patch.object(
-            self.extractor.groq_service,
-            "generate_response_async",
+        with patch(
+            "app.services.pattern_extractor.run_groq_structured",
             new_callable=AsyncMock,
-        ) as mock_llm:
-            mock_llm.return_value = str(mock_response).replace("'", '"')
+        ) as mock_run:
+            mock_run.return_value = VerificationPatternsModel.model_validate(mock_response)
 
-            with patch(
-                "app.utils.json_parser.parse_llm_json_response_async",
-                new_callable=AsyncMock,
-            ) as mock_parse:
-                mock_parse.return_value = mock_response
+            result = await self.extractor.extract_patterns_from_test(
+                test_file_content=test_content,
+                test_file_path="tests/calculator.test.js",
+                language="javascript",
+            )
 
-                result = await self.extractor.extract_patterns_from_test(
-                    test_file_content=test_content,
-                    test_file_path="tests/calculator.test.js",
-                    language="javascript",
-                )
-
-                assert result["success"]
-                assert "patterns" in result
+            assert result["success"]
+            assert "patterns" in result
 
     def test_detect_language(self):
         """Test language detection from file path."""

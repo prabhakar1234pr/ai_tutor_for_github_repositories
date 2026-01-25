@@ -8,11 +8,60 @@ import json
 import logging
 from typing import Any
 
+# Pydantic validation for final structured output
+from pydantic import BaseModel, Field, field_validator
+
 # Using Gemini for verification
 from app.services.github_tools import execute_github_tool, get_github_tools
 from app.utils.json_parser import parse_llm_json_response_async
 
 logger = logging.getLogger(__name__)
+
+
+class RequirementCheckItem(BaseModel):
+    met: bool = False
+    feedback: str = ""
+
+
+class VerificationResultModel(BaseModel):
+    """
+    Enforced output schema for verification results.
+    Defaults ensure we always return a valid, structured object even if the LLM omits fields.
+    """
+
+    passed: bool = False
+    overall_feedback: str = ""
+    requirements_check: dict[str, RequirementCheckItem] = Field(default_factory=dict)
+    hints: list[str] = Field(default_factory=list)
+    issues_found: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+    code_quality: str = "needs_improvement"
+
+    # Backward-compatible optional fields (kept optional even if unused)
+    test_status: str | None = None
+    pattern_match_status: str | None = None
+
+    model_config = {"extra": "ignore"}
+
+    @field_validator("requirements_check", mode="before")
+    @classmethod
+    def _coerce_requirements_check(cls, v):
+        # Accept various shapes and normalize into dict[str, {met, feedback}]
+        if v is None:
+            return {}
+        if not isinstance(v, dict):
+            return {"main_requirement": {"met": False, "feedback": str(v)}}
+        coerced: dict[str, dict[str, Any]] = {}
+        for k, item in v.items():
+            if isinstance(item, dict):
+                coerced[str(k)] = {
+                    "met": bool(item.get("met", False)),
+                    "feedback": str(item.get("feedback", "")),
+                }
+            else:
+                coerced[str(k)] = {"met": bool(item), "feedback": ""}
+        return coerced
+
 
 # System prompt for verification agent
 VERIFICATION_AGENT_SYSTEM_PROMPT = """You are a STRICT code reviewer verifying if a student's code fulfills task requirements.
@@ -57,9 +106,7 @@ Your task is to verify if code changes between two commits fulfill the given tas
   "hints": ["Helpful hint if failed"],
   "issues_found": ["ONLY actual problems. If task PASSED, use empty array []."],
   "suggestions": ["Optional code quality improvements. These are NOT issues."],
-  "code_quality": "good/acceptable/needs_improvement",
-  "test_status": "passed/failed/not_run/error",
-  "pattern_match_status": "all_matched/partial/none"
+  "code_quality": "good/acceptable/needs_improvement"
 }
 
 **IMPORTANT**: Use tools to gather information first, then provide your verification decision."""
@@ -124,6 +171,26 @@ class VerificationAgent:
                 user_message += f"\n**Task Title:** {additional_context['task_title']}\n"
             if additional_context.get("task_type"):
                 user_message += f"\n**Task Type:** {additional_context['task_type']}\n"
+
+            # Current day + concept context (small, targeted)
+            day_number = additional_context.get("day_number")
+            day_theme = additional_context.get("day_theme")
+            day_desc = additional_context.get("day_description")
+            if day_number is not None or day_theme or day_desc:
+                user_message += "\n**Current Day Context:**\n"
+                if day_number is not None or day_theme:
+                    user_message += f"- Day {day_number}: {day_theme or ''}\n"
+                if day_desc:
+                    user_message += f"- Day Description: {day_desc}\n"
+
+            concept_title = additional_context.get("concept_title")
+            concept_desc = additional_context.get("concept_description")
+            if concept_title or concept_desc:
+                user_message += "\n**Current Concept Context:**\n"
+                if concept_title:
+                    user_message += f"- Concept: {concept_title}\n"
+                if concept_desc:
+                    user_message += f"- Concept Description: {concept_desc}\n"
 
             # Add previous concept summaries (max 5, skip for 1st concept)
             previous_concept_summaries = additional_context.get("previous_concept_summaries", [])
@@ -409,8 +476,19 @@ class VerificationAgent:
             else:
                 return self._create_error_response("Agent response is not valid JSON")
 
+        # Enforce output schema (still allows your JSON parser/sanitizer fallback above)
+        try:
+            verification_result = VerificationResultModel.model_validate(
+                verification_result
+            ).model_dump()
+        except Exception as e:
+            logger.error(f"Failed to validate verification result schema: {e}", exc_info=True)
+
         # Log parsed result
-        passed = verification_result.get("passed", False)
+        if isinstance(verification_result, dict):
+            passed = bool(verification_result.get("passed", False))
+        else:
+            passed = bool(getattr(verification_result, "passed", False))
         logger.info(f"🎯 Gemini Agent decision: {'✅ PASSED' if passed else '❌ FAILED'}")
         if verification_result.get("overall_feedback"):
             logger.info(

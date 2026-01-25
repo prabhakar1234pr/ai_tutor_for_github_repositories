@@ -4,14 +4,14 @@ Generates concept content with lazy loading and retry logic.
 
 Optimized for the new curriculum structure:
 - generate_concept_content: Generates content and summary in a SINGLE Gemini API call
-- Tasks are generated separately in a dedicated node with test files
+- Tasks are generated separately in a dedicated node (descriptions only)
 - Uses retry wrapper for resilient Gemini API calls
 - Updates memory_ledger with skills and files
 - Derives generation queue from curriculum (not stored in state)
 
 Gemini API Call Optimization:
 - Content generation: 1 call per concept (content + summary) using Gemini
-- Tasks are generated separately with test files in generate_tasks_with_tests node using Gemini
+- Tasks are generated separately in the generate_tasks node using Gemini
 """
 
 import logging
@@ -23,18 +23,22 @@ from app.agents.prompts import (
     CONCEPTS_GENERATION_PROMPT,
     CONTENT_GENERATION_PROMPT,
 )
+
+# Note: Day 0 is handled separately via API endpoint, not imported here
+from app.agents.pydantic_models import (
+    ConceptBundleModel,
+    ContentOnlyModel,
+    GeneratedConceptModel,
+)
 from app.agents.state import ConceptData, RoadmapAgentState
 from app.agents.utils.concept_order import (
     get_ordered_concept_ids,
     get_user_current_index,
     select_next_concept_to_generate,
 )
+from app.agents.utils.pydantic_ai_client import run_gemini_structured
 from app.agents.utils.retry_wrapper import JSONParseError, generate_with_retry
 from app.core.supabase_client import get_supabase_client
-from app.services.gemini_service import get_gemini_service
-
-# Note: Day 0 is handled separately via API endpoint, not imported here
-from app.utils.json_parser import parse_llm_json_response_async
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +212,7 @@ async def _llm_generate_concept_bundle(
     """
     Generate content and summary for a single concept in ONE LLM call.
 
-    Tasks are generated separately in the generate_tasks_with_tests node.
+    Tasks are generated separately in the generate_tasks node.
 
     Args:
         concept_id: Concept ID
@@ -222,8 +226,6 @@ async def _llm_generate_concept_bundle(
     Raises:
         JSONParseError: If LLM response cannot be parsed
     """
-    gemini_service = get_gemini_service()
-
     concept_title = concept_metadata.get("title", concept_id)
     concept_objective = concept_metadata.get("objective", "")
     repo_anchors = concept_metadata.get("repo_anchors", [])
@@ -243,19 +245,14 @@ async def _llm_generate_concept_bundle(
     logger.info(f"   📤 Sending content generation request to Gemini for '{concept_title}'...")
     logger.debug("   📝 Generating content + summary with Gemini (Vertex AI)...")
 
-    response = await gemini_service.generate_response_async(
-        user_query=combined_prompt,
-        system_prompt="You are an expert technical educator. Return ONLY valid JSON object, no markdown or extra text.",
-        context="",
+    bundle = await run_gemini_structured(
+        user_prompt=combined_prompt,
+        system_prompt="You are an expert technical educator.",
+        output_type=ConceptBundleModel,
     )
+    result_data = bundle.model_dump()
 
-    logger.info(f"   ✅ Gemini response received for '{concept_title}' ({len(response)} chars)")
-
-    # Parse the combined response
-    result_data = await parse_llm_json_response_async(response, expected_type="object")
-
-    logger.debug(f"   ✅ Gemini response parsed for '{concept_title}'")
-
+    logger.debug(f"   ✅ Gemini response validated for '{concept_title}' (structured)")
     return result_data
 
 
@@ -415,7 +412,7 @@ async def _save_concept_content_to_db(
     """
     Save generated content to database.
 
-    Tasks are saved separately in the generate_tasks_with_tests node.
+    Tasks are saved separately in the generate_tasks node.
     """
     from app.utils.markdown_sanitizer import sanitize_markdown_content
 
@@ -587,20 +584,19 @@ async def generate_concepts_for_day(state: RoadmapAgentState) -> RoadmapAgentSta
         memory_context_section=memory_context_section,
     )
 
-    gemini_service = get_gemini_service()
     system_prompt = (
         "You are an expert curriculum designer. "
         "Return ONLY valid JSON array, no markdown, no extra text."
     )
 
     try:
-        llm_response = await gemini_service.generate_response_async(
-            user_query=prompt,
+        # DEPRECATED path kept consistent: use structured output instead of JSON parsing.
+        concepts_models = await run_gemini_structured(
+            user_prompt=prompt,
             system_prompt=system_prompt,
-            context="",
+            output_type=list[GeneratedConceptModel],
         )
-
-        concepts_list = await parse_llm_json_response_async(llm_response, expected_type="array")
+        concepts_list = [c.model_dump() for c in concepts_models]
 
         # Convert to ConceptData objects
         current_concepts: list[ConceptData] = []
@@ -647,8 +643,6 @@ async def generate_content_and_tasks(state: RoadmapAgentState) -> RoadmapAgentSt
 
     logger.info(f"🤖 Generating content and tasks for: {concept['title']}")
 
-    gemini_service = get_gemini_service()
-
     try:
         # Generate content
         content_prompt = CONTENT_GENERATION_PROMPT.format(
@@ -659,36 +653,21 @@ async def generate_content_and_tasks(state: RoadmapAgentState) -> RoadmapAgentSt
         )
 
         logger.debug("   Calling LLM for content...")
-        content_response = await gemini_service.generate_response_async(
-            user_query=content_prompt,
-            system_prompt="You are an expert educator. Return ONLY valid JSON object, no markdown.",
-            context="",
+        content_model = await run_gemini_structured(
+            user_prompt=content_prompt,
+            system_prompt="You are an expert educator.",
+            output_type=ContentOnlyModel,
         )
+        content_data = content_model.model_dump()
+        concept["content"] = content_data.get("content", "")
+        concept["estimated_minutes"] = content_data.get("estimated_minutes", 15)
 
-        # Parse content JSON
-        try:
-            content_data = await parse_llm_json_response_async(
-                content_response, expected_type="object"
-            )
-            concept["content"] = content_data.get("content", "")
-            concept["estimated_minutes"] = content_data.get("estimated_minutes", 15)
+        if not concept["content"] or concept["content"].strip() == "":
+            logger.warning(f"⚠️  Content is empty for concept '{concept['title']}'")
+        else:
+            logger.debug(f"   Generated content ({len(concept['content'])} chars)")
 
-            # Warn if content is empty after parsing
-            if not concept["content"] or concept["content"].strip() == "":
-                logger.warning(
-                    f"⚠️  Content is empty after parsing for concept '{concept['title']}'. "
-                    f"Parsed data keys: {list(content_data.keys())}. "
-                    f"Response preview: {content_response[:500]}"
-                )
-            else:
-                logger.debug(f"   Generated content ({len(concept['content'])} chars)")
-        except Exception as parse_error:
-            logger.warning(f"⚠️  Failed to parse content JSON: {parse_error}")
-            logger.debug(f"   Response preview: {content_response[:500]}")
-            concept["content"] = ""
-            concept["estimated_minutes"] = 15
-
-        # Tasks are now generated separately in generate_tasks_with_tests node
+        # Tasks are now generated separately in generate_tasks node
 
         logger.info(f"✅ Generated content for concept: {concept['title']}")
 
