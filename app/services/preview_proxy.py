@@ -8,10 +8,13 @@ This enables students to preview their web apps:
 """
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.config import settings
+from app.core.supabase_client import get_supabase_client
 from app.services.docker_client import get_docker_client
 
 # Lazy imports to avoid circular dependency
@@ -55,6 +58,7 @@ class PreviewProxyService:
 
     def __init__(self):
         self._workspace_manager = None
+        self.supabase = get_supabase_client()
         self.docker_client = get_docker_client()
         # HTTP client with reasonable timeouts for dev server responses
         self.http_client = httpx.AsyncClient(
@@ -132,6 +136,120 @@ class PreviewProxyService:
         except Exception as e:
             logger.error(f"Failed to get host port: {e}")
             return None
+
+    def get_environment_base_url(self) -> str | None:
+        """
+        Determine the base URL for preview links based on environment settings.
+        """
+        if settings.workspace_public_base_url:
+            return settings.workspace_public_base_url.rstrip("/")
+        if settings.environment != "production":
+            return f"http://{settings.host}:{settings.port}".rstrip("/")
+        return None
+
+    def build_preview_url(
+        self,
+        workspace_id: str,
+        container_id: str,
+        container_port: int,
+        base_url: str | None = None,
+    ) -> tuple[str | None, str | None, int | None]:
+        """
+        Build a preview URL for a given container port.
+
+        Returns:
+            (url, url_type, host_port)
+        """
+        env_base_url = self.get_environment_base_url()
+        resolved_base_url = (base_url or env_base_url or "").rstrip("/")
+        host_port = self.get_host_port(container_id, container_port)
+
+        # Prefer proxy URLs in production or when base_url is explicitly provided.
+        if resolved_base_url and (base_url is not None or settings.environment == "production"):
+            return (
+                f"{resolved_base_url}/api/preview/{workspace_id}/{container_port}/",
+                "proxy",
+                host_port,
+            )
+
+        # Prefer direct URLs locally when host port is mapped.
+        if host_port:
+            return f"http://localhost:{host_port}", "direct", host_port
+
+        # Fallback to proxy URL if direct mapping is unavailable.
+        if resolved_base_url:
+            return (
+                f"{resolved_base_url}/api/preview/{workspace_id}/{container_port}/",
+                "proxy",
+                host_port,
+            )
+
+        return None, None, host_port
+
+    def register_detected_server(
+        self,
+        workspace_id: str,
+        container_id: str,
+        port: int,
+        server_type: str | None = None,
+        preview_url: str | None = None,
+    ) -> dict[str, Any] | None:
+        """
+        Upsert a detected dev server into the active_preview_servers table.
+        """
+        now = datetime.now(UTC).isoformat()
+        row = {
+            "workspace_id": workspace_id,
+            "container_id": container_id,
+            "detected_port": port,
+            "detected_at": now,
+            "last_verified_at": now,
+            "is_active": True,
+            "server_type": server_type,
+            "preview_url": preview_url,
+        }
+
+        try:
+            result = (
+                self.supabase.table("active_preview_servers")
+                .upsert(row, on_conflict="workspace_id,detected_port")
+                .execute()
+            )
+            if result.data:
+                return result.data[0]
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to register detected server: {e}")
+            return None
+
+    def get_detected_servers(self, workspace_id: str) -> list[dict[str, Any]]:
+        """
+        Fetch active detected servers for a workspace.
+        """
+        try:
+            result = (
+                self.supabase.table("active_preview_servers")
+                .select("*")
+                .eq("workspace_id", workspace_id)
+                .eq("is_active", True)
+                .order("detected_at", desc=True)
+                .execute()
+            )
+            return result.data or []
+        except Exception as e:
+            logger.warning(f"Failed to fetch detected servers: {e}")
+            return []
+
+    def mark_server_inactive(self, workspace_id: str, port: int) -> None:
+        """
+        Mark a detected server as inactive.
+        """
+        try:
+            self.supabase.table("active_preview_servers").update(
+                {"is_active": False, "last_verified_at": datetime.now(UTC).isoformat()}
+            ).eq("workspace_id", workspace_id).eq("detected_port", port).execute()
+        except Exception as e:
+            logger.debug(f"Failed to mark server inactive: {e}")
 
     async def proxy_request(
         self,
@@ -268,16 +386,43 @@ class PreviewProxyService:
             }
 
             if actual_host_port:
-                if base_url:
-                    # GCP/Production: Use proxy endpoint
-                    port_info["url"] = f"{base_url}/api/preview/{workspace_id}/{container_port}/"
-                    port_info["type"] = "proxy"
-                else:
-                    # Local: Direct access
-                    port_info["url"] = f"http://localhost:{actual_host_port}"
-                    port_info["type"] = "direct"
+                url, url_type, _host_port = self.build_preview_url(
+                    workspace_id=workspace_id,
+                    container_id=container_id,
+                    container_port=container_port,
+                    base_url=base_url,
+                )
+                if url:
+                    port_info["url"] = url
+                    port_info["type"] = url_type
 
             preview_info["ports"][container_port] = port_info
+
+        # Add detected servers (from terminal detection)
+        detected_servers = self.get_detected_servers(workspace_id)
+        detected_list: list[dict[str, Any]] = []
+        for server in detected_servers:
+            detected_port = server.get("detected_port")
+            if not detected_port:
+                continue
+            url, url_type, host_port = self.build_preview_url(
+                workspace_id=workspace_id,
+                container_id=container_id,
+                container_port=int(detected_port),
+                base_url=base_url,
+            )
+            detected_list.append(
+                {
+                    "container_port": int(detected_port),
+                    "host_port": host_port,
+                    "url": url,
+                    "type": url_type,
+                    "server_type": server.get("server_type"),
+                    "is_active": server.get("is_active", True),
+                    "detected_at": server.get("detected_at"),
+                }
+            )
+        preview_info["detected"] = detected_list
 
         # Add helpful instructions
         if base_url:

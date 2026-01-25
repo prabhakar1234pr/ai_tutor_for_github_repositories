@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # Environment (development or production)
     environment: str = "development"
 
+    # Workspace/Preview base URL for terminal previews (e.g., https://api.gitguide.com)
+    workspace_public_base_url: str | None = None
+
     # LLM API Keys - Azure OpenAI (Production)
     azure_openai_key: str | None = None  # Maps to AZURE_OPENAI_KEY
     azure_openai_endpoint: str | None = None

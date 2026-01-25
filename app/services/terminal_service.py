@@ -55,6 +55,19 @@ class TerminalService:
         self._max_buffer_size = 10240
         # Track last processed commit SHA per session to avoid duplicate updates
         self._last_processed_commits: dict[str, str] = {}
+        # Track announced preview ports per session to avoid duplicate messages
+        self._announced_ports: dict[str, set[int]] = {}
+        # Patterns to detect dev server URLs/ports from terminal output
+        self._preview_patterns = [
+            re.compile(r"(?:Local|local):\s*https?://[^\s:]+:(\d{2,5})"),
+            re.compile(r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\]|::1):(\d{2,5})"),
+            re.compile(
+                r"(?:listening on|started on|server running at|running at)\s+"
+                r"(?:https?://)?(?:0\.0\.0\.0|127\.0\.0\.1|localhost)?[:\s](\d{2,5})",
+                re.IGNORECASE,
+            ),
+            re.compile(r"port\s+(\d{2,5})\s*(?:open|listening|ready)", re.IGNORECASE),
+        ]
 
     def _row_to_session(self, row: dict) -> TerminalSession:
         """Convert database row to TerminalSession object."""
@@ -320,6 +333,8 @@ class TerminalService:
                         logger.debug(f"Terminal output for {session_id}: {len(data)} bytes")
                         # Check for commits in terminal output
                         self._check_for_commit(session_id, data)
+                        # Check for dev server previews in terminal output
+                        self._check_for_preview(session_id, data, on_output)
                         on_output(data)
                     else:
                         # No data, small sleep to prevent busy loop
@@ -605,6 +620,102 @@ class TerminalService:
         except Exception as e:
             logger.debug(f"Error checking for commit in terminal output: {e}")
 
+    def _extract_preview_ports(self, output_text: str) -> set[int]:
+        """Extract candidate ports from output text."""
+        ports: set[int] = set()
+        for pattern in self._preview_patterns:
+            for match in pattern.findall(output_text):
+                try:
+                    port = int(match)
+                except (TypeError, ValueError):
+                    continue
+                if 1024 <= port <= 65535:
+                    ports.add(port)
+        return ports
+
+    def _is_port_listening(self, container_id: str, port: int) -> bool:
+        """Check if a port is listening inside the container."""
+        commands = [
+            "ss -lnt 2>/dev/null || netstat -lnt 2>/dev/null",
+            "netstat -lnt 2>/dev/null",
+        ]
+        for command in commands:
+            exit_code, output = self.docker_client.exec_command(container_id, command)
+            if exit_code != 0 or not output:
+                continue
+            if f":{port} " in output or f":{port}\n" in output or f":{port}\r\n" in output:
+                return True
+        return False
+
+    def _check_for_preview(
+        self, session_id: str, output_data: bytes, on_output: Callable[[bytes], None]
+    ) -> None:
+        """Check terminal output for dev server URLs and announce preview links."""
+        try:
+            output_text = output_data.decode("utf-8", errors="replace")
+        except Exception:
+            return
+
+        ports = self._extract_preview_ports(output_text)
+        if not ports:
+            return
+
+        for port in ports:
+            announced = self._announced_ports.get(session_id, set())
+            if port in announced:
+                continue
+            asyncio.create_task(self._handle_preview_detected(session_id, port, on_output))
+
+    async def _handle_preview_detected(
+        self, session_id: str, port: int, on_output: Callable[[bytes], None]
+    ) -> None:
+        """Verify server port and announce preview URL."""
+        session = self.get_session(session_id)
+        if not session:
+            return
+
+        from app.services.preview_proxy import get_preview_proxy
+        from app.services.workspace_manager import get_workspace_manager
+
+        workspace_manager = get_workspace_manager()
+        workspace = workspace_manager.get_workspace(session.workspace_id)
+        if not workspace or not workspace.container_id:
+            return
+
+        # Verify port is listening in container
+        if not self._is_port_listening(workspace.container_id, port):
+            return
+
+        preview_proxy = get_preview_proxy()
+        preview_url, url_type, _host_port = preview_proxy.build_preview_url(
+            workspace_id=workspace.workspace_id,
+            container_id=workspace.container_id,
+            container_port=port,
+            base_url=None,
+        )
+
+        if not preview_url:
+            return
+
+        preview_proxy.register_detected_server(
+            workspace_id=workspace.workspace_id,
+            container_id=workspace.container_id,
+            port=port,
+            server_type=None,
+            preview_url=preview_url,
+        )
+
+        # Track announcement to avoid duplicates
+        if session_id not in self._announced_ports:
+            self._announced_ports[session_id] = set()
+        self._announced_ports[session_id].add(port)
+
+        message = (f"\r\n\x1b[32mPreview ready ({url_type}): {preview_url}\x1b[0m\r\n").encode()
+        try:
+            on_output(message)
+        except Exception:
+            pass
+
     async def _update_last_platform_commit_delayed(
         self, workspace_id: str, session_id: str
     ) -> None:
@@ -671,6 +782,8 @@ class TerminalService:
             del self._output_buffers[session_id]
         if session_id in self._last_processed_commits:
             del self._last_processed_commits[session_id]
+        if session_id in self._announced_ports:
+            del self._announced_ports[session_id]
 
 
 # Singleton instance
