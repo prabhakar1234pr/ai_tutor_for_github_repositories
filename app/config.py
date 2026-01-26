@@ -103,7 +103,9 @@ class Settings(BaseSettings):
     groq_api_key2: str | None = (
         None  # Maps to GROQ_API_KEY2 - for task verification (higher limits)
     )
-    groq_model: str = "llama-3.1-70b-instruct"
+    # Default to a model available on Groq's OpenAI-compatible API for most keys.
+    # (If you set GROQ_MODEL in .env, that will override this.)
+    groq_model: str = "llama-3.3-70b-versatile"
     groq_sanitizer_model: str = (
         "openai/gpt-oss-120b"  # Model for JSON sanitization (when main model returns markdown/code)
     )

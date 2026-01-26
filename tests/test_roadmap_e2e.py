@@ -19,7 +19,6 @@ class TestRoadmapE2E:
         """FastAPI test client with all routers"""
         from fastapi import FastAPI
 
-        from app.api.chatbot import router as chatbot_router
         from app.api.progress import router as progress_router
         from app.api.project_chunks_embeddings import router as project_chunks_embeddings_router
         from app.api.projects import router as projects_router
@@ -37,7 +36,6 @@ class TestRoadmapE2E:
         )
         test_app.include_router(roadmap_router, prefix="/api/roadmap", tags=["roadmap"])
         test_app.include_router(progress_router, prefix="/api/progress", tags=["progress"])
-        test_app.include_router(chatbot_router, prefix="/api/chatbot", tags=["chatbot"])
 
         return TestClient(test_app)
 
