@@ -122,7 +122,7 @@
 ## 🎯 Next Steps
 
 1. **Monitor GitHub Actions:**
-   - Check: https://github.com/prabhakar1234pr/ai_tutor_for_github_repositories/actions
+   - Check: https://github.com/prabhakar1234pr/GitGuide-FastAPI/actions
    - Wait for deployment to complete
 
 2. **Verify Deployment:**

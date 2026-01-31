@@ -41,7 +41,7 @@
 ## 📋 Post-Deployment Verification Steps
 
 ### 1. Wait for GitHub Actions to Complete
-Check: https://github.com/prabhakar1234pr/ai_tutor_for_github_repositories/actions
+Check: https://github.com/prabhakar1234pr/GitGuide-FastAPI/actions
 
 ### 2. Verify Environment Variables After Deployment
 

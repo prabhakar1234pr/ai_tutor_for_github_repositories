@@ -28,7 +28,7 @@
 ### Next Steps
 
 1. **Monitor GitHub Actions**
-   - Go to: https://github.com/prabhakar1234pr/ai_tutor_for_github_repositories/actions
+   - Go to: https://github.com/prabhakar1234pr/GitGuide-FastAPI/actions
    - Look for workflow: "Deploy to GCP"
    - Expected jobs:
      - ✅ `ci` (lint + test)

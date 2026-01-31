@@ -25,7 +25,7 @@ cd /opt
 if [ -d "gitguide-backend" ]; then
     echo "Repository already exists, skipping clone..."
 else
-    sudo git clone https://github.com/prabhakar1234pr/ai_tutor_for_github_repositories.git gitguide-backend
+    sudo git clone https://github.com/prabhakar1234pr/GitGuide-FastAPI.git gitguide-backend
     sudo chown -R $USER:$USER gitguide-backend
 fi
 cd gitguide-backend
